@@ -168,74 +168,8 @@ if wget -q -O borg.conf "$CONF_URL" 2>/dev/null; then
     print_info "Security: Set permissions to 600 (root only)"
 else
     print_error "Failed to download borg.conf from $CONF_URL"
-    print_info "Creating default configuration..."
-    
-    # Create default config if download fails (minimal, matches borg.conf structure)
-    cat > /usr/local/vesta/conf/borg.conf << 'EOF'
-#----------------------------------------------------------#
-#                 Borg Backup Configuration                #
-#----------------------------------------------------------#
-
-# Backup paths
-HOME_DIR=/home
-VESTA_DIR=/usr/local/vesta
-ETC_DIR=/etc
-SCRIPTS_DIR=/root/scripts
-BACKUP_DIR=/backup/borg
-
-# Repository layout
-REPO_USERS_DIR=$BACKUP_DIR/home
-REPO_DB_DIR=$BACKUP_DIR/db
-REPO_VESTA_DIR=$BACKUP_DIR/vesta
-REPO_ETC=$BACKUP_DIR/etc
-REPO_SCRIPTS=$BACKUP_DIR/scripts
-
-# Retention policy
-KEEP_WITHIN="7d"
-KEEP_DAILY=30
-KEEP_WEEKLY=8
-KEEP_MONTHLY=12
-KEEP_YEARLY=2
-
-# Borg settings
-ENCRYPTION_MODE="none"
-BORG_PASSPHRASE=""
-COMPRESSION_MODE="lz4"
-OPTIONS_INIT="--encryption=$ENCRYPTION_MODE"
-OPTIONS_CREATE="-sv --compression $COMPRESSION_MODE"
-OPTIONS_PRUNE="-v --keep-within=$KEEP_WITHIN --keep-daily=$KEEP_DAILY --keep-weekly=$KEEP_WEEKLY --keep-monthly=$KEEP_MONTHLY --keep-yearly=$KEEP_YEARLY"
-
-# Backup mode: local, remote, or both
-BACKUP_MODE="local"
-
-# Remote backup settings
-REMOTE_BACKUP_SERVER=""
-REMOTE_BACKUP_PORT="23"
-REMOTE_BACKUP_DIR="/home/borg"
-REMOTE_BACKUP_PASSWORD=""
-REMOTE_SYNC_METHOD="rsync"
-
-# Exclusions
-EXCLUDED_USERS=""
-EXCLUDE_PATTERNS=("*/tmp" "*/cache" "*/.cache")
-
-# Notifications and monitoring
-NOTIFY_ADMIN_BACKUP=""
-DISK_SPACE_WARNING_THRESHOLD=80
-DISK_SPACE_CRITICAL_THRESHOLD=90
-REQUIRE_PER_USER_CONFIG="no"
-
-# Advanced
-PUBLIC_HTML_DIR_NAME="public_html"
-DB_DUMP_DIR_NAME="db_dump"
-MYSQL_REPAIR_BEFORE_BACKUP="yes"
-ARCHIVE_DATE_FORMAT="%Y-%m-%d_%H-%M-%S"
-LOG_DIR="/var/log/borg"
-EOF
-    chmod 600 /usr/local/vesta/conf/borg.conf
-    chown root:root /usr/local/vesta/conf/borg.conf
-    print_success "Default configuration created"
-    print_info "Security: Set permissions to 600 (root only)"
+    print_error "Installation cannot continue without configuration file"
+    exit 1
 fi
 
 #----------------------------------------------------------#
