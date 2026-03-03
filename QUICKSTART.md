@@ -272,8 +272,8 @@ The new system can run in parallel with the old tar-based system:
 ## Support
 
 For questions and issues, check:
-- Project overview documentation
-- Hetzner setup guide for remote backups
+- Full documentation: `README.md`
+- Repository: https://github.com/isscbta/myvesta-incremental-backup
 
 ## Important Notes
 
