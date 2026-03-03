@@ -162,10 +162,10 @@ else
 fi
 
 #----------------------------------------------------------#
-#                Test MyVesta Config                       #
+#                Test myVesta Config                       #
 #----------------------------------------------------------#
 
-echo "$(get_timestamp) ========== Testing MyVesta Config ==========" | tee -a "$LOG_FILE"
+echo "$(get_timestamp) ========== Testing myVesta Config ==========" | tee -a "$LOG_FILE"
 
 VESTA_ARCHIVE_NAME="$user-$archive"
 if borg list "$VESTA_REPO::$VESTA_ARCHIVE_NAME" &>/dev/null; then
@@ -180,22 +180,22 @@ if borg list "$VESTA_REPO::$VESTA_ARCHIVE_NAME" &>/dev/null; then
         VESTA_USER_CONF="$TEMP_DIR/usr/local/vesta/data/users/$user/user.conf"
         if [ -f "$VESTA_USER_CONF" ]; then
             if [ -r "$VESTA_USER_CONF" ]; then
-                echo "$(get_timestamp) PASSED: MyVesta config files are readable" | tee -a "$LOG_FILE"
+                echo "$(get_timestamp) PASSED: myVesta config files are readable" | tee -a "$LOG_FILE"
                 ((PASSED_CHECKS++))
             else
-                echo "$(get_timestamp) FAILED: MyVesta config file is not readable" | tee -a "$LOG_FILE"
-                ERRORS="${ERRORS}MyVesta config file not readable. "
+                echo "$(get_timestamp) FAILED: myVesta config file is not readable" | tee -a "$LOG_FILE"
+                ERRORS="${ERRORS}myVesta config file not readable. "
                 ((FAILED_CHECKS++))
             fi
         else
             # Try alternative location (if extracted directly)
             if [ -f "$TEMP_VESTA_DIR/user.conf" ]; then
                 if [ -r "$TEMP_VESTA_DIR/user.conf" ]; then
-                    echo "$(get_timestamp) PASSED: MyVesta config files are readable" | tee -a "$LOG_FILE"
+                    echo "$(get_timestamp) PASSED: myVesta config files are readable" | tee -a "$LOG_FILE"
                     ((PASSED_CHECKS++))
                 else
-                    echo "$(get_timestamp) FAILED: MyVesta config file is not readable" | tee -a "$LOG_FILE"
-                    ERRORS="${ERRORS}MyVesta config file not readable. "
+                    echo "$(get_timestamp) FAILED: myVesta config file is not readable" | tee -a "$LOG_FILE"
+                    ERRORS="${ERRORS}myVesta config file not readable. "
                     ((FAILED_CHECKS++))
                 fi
             else
@@ -205,14 +205,14 @@ if borg list "$VESTA_REPO::$VESTA_ARCHIVE_NAME" &>/dev/null; then
         fi
         ((TOTAL_CHECKS++))
     else
-        echo "$(get_timestamp) FAILED: Cannot extract MyVesta config archive" | tee -a "$LOG_FILE"
-        ERRORS="${ERRORS}MyVesta config extraction failed. "
+        echo "$(get_timestamp) FAILED: Cannot extract myVesta config archive" | tee -a "$LOG_FILE"
+        ERRORS="${ERRORS}myVesta config extraction failed. "
         ((FAILED_CHECKS++))
         ((TOTAL_CHECKS++))
     fi
     cd - > /dev/null || true
 else
-    echo "$(get_timestamp) INFO: MyVesta config archive not found" | tee -a "$LOG_FILE"
+    echo "$(get_timestamp) INFO: myVesta config archive not found" | tee -a "$LOG_FILE"
 fi
 
 #----------------------------------------------------------#

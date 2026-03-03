@@ -43,7 +43,7 @@ if [ -z "$user" ]; then
     echo "This will permanently delete ALL backups for the user:"
     echo "  - All user home archives"
     echo "  - All database archives"
-    echo "  - All MyVesta config archives"
+    echo "  - All myVesta config archives"
     echo "  - Entire repositories will be removed"
     echo ""
     echo "Example:"
@@ -96,7 +96,7 @@ echo ""
 echo "This will delete:"
 echo "  - All archives in: $USER_REPO"
 echo "  - All archives in: $DB_REPO"
-echo "  - All MyVesta config archives for this user in: $VESTA_REPO"
+echo "  - All myVesta config archives for this user in: $VESTA_REPO"
 echo ""
 echo "This action CANNOT be undone!"
 echo ""
@@ -148,12 +148,12 @@ else
     echo "$(get_timestamp) Database repository does not exist, skipping"
 fi
 
-# Delete MyVesta config archives (from shared repo)
+# Delete myVesta config archives (from shared repo)
 if borg list "$VESTA_REPO" &>/dev/null 2>&1; then
     VESTA_ARCHIVES=$(borg list "$VESTA_REPO" 2>/dev/null | grep "^${user}-" | awk '{print $1}')
     
     if [ -n "$VESTA_ARCHIVES" ]; then
-        echo "$(get_timestamp) Deleting MyVesta config archives for user: $user"
+        echo "$(get_timestamp) Deleting myVesta config archives for user: $user"
         
         while IFS= read -r archive; do
             if [ -z "$archive" ]; then
@@ -170,10 +170,10 @@ if borg list "$VESTA_REPO" &>/dev/null 2>&1; then
             fi
         done <<< "$VESTA_ARCHIVES"
     else
-        echo "$(get_timestamp) No MyVesta config archives found for user: $user"
+        echo "$(get_timestamp) No myVesta config archives found for user: $user"
     fi
 else
-    echo "$(get_timestamp) MyVesta config repository does not exist, skipping"
+    echo "$(get_timestamp) myVesta config repository does not exist, skipping"
 fi
 
 #----------------------------------------------------------#

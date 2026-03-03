@@ -1,4 +1,4 @@
-# MyVesta Borg Incremental Backup System
+# myVesta Borg Incremental Backup System
 
 A comprehensive, production-ready incremental backup system for myVesta Control Panel, built with Borg Backup. This system provides efficient, deduplicated backups with support for local storage, remote storage (Hetzner Storage Box, SSH servers), and hybrid modes.
 
@@ -136,7 +136,7 @@ This file controls the entire backup system behavior. All settings are documente
 # User home directories location
 HOME_DIR=/home
 
-# MyVesta control panel directory
+# myVesta control panel directory
 VESTA_DIR=/usr/local/vesta
 
 # System config directories
@@ -425,7 +425,7 @@ All commands follow myVesta CLI naming convention: `v-COMMAND-incremental` or `v
 
 #### `v-borg-backup-user`
 
-Backup a single user with all their data (home directory, databases, MyVesta config).
+Backup a single user with all their data (home directory, databases, myVesta config).
 
 **Syntax**:
 ```bash
@@ -451,7 +451,7 @@ v-borg-backup-user john
 **What it backs up**:
 - User home directory (`/home/USER/`)
 - All MySQL databases owned by user
-- MyVesta configuration (`/usr/local/vesta/data/users/USER/`)
+- myVesta configuration (`/usr/local/vesta/data/users/USER/`)
 
 **Output**: Creates log file in `/var/log/borg/backup-user-USER-YYYY-MM-DD.log`
 
@@ -499,7 +499,7 @@ v-borg-backup-system
 
 **What it backs up**:
 - `/etc` directory (system configuration)
-- `/usr/local/vesta` directory (MyVesta installation)
+- `/usr/local/vesta` directory (myVesta installation)
 - `/root/scripts` directory (custom scripts, if exists)
 
 **Examples**:
@@ -559,7 +559,7 @@ v-borg-restore-user 2025-10-16 admin '*' '' '' '*'
 ```
 
 **What it restores**:
-- **Full restore**: MyVesta config → User rebuild → Home directory → Web permissions → Databases → Final rebuild
+- **Full restore**: myVesta config → User rebuild → Home directory → Web permissions → Databases → Final rebuild
 - **Partial restore**: Only specified components (WEB/DNS/MAIL/DB)
 
 **Restore Source Selection** (for `BACKUP_MODE="both"`):
@@ -676,7 +676,7 @@ v-borg-delete-backup admin 2025-10-16_17-43-57
 
 **What it deletes**:
 - User home archive
-- MyVesta config archive (if exists)
+- myVesta config archive (if exists)
 - All database archives for that date
 
 **Safety**: Requires confirmation prompt before deletion.
@@ -961,7 +961,7 @@ v-borg-restore-checkup admin 2025-10-16_17-43-57
 - **Archive Accessibility**: Can we list/extract from archive?
 - **Test Extract**: Extract to temp directory, verify files (dry-run)
 - **Database Validity**: Check if DB dump is valid SQL
-- **Config Validity**: Verify MyVesta config files are readable
+- **Config Validity**: Verify myVesta config files are readable
 
 **Output**: Detailed report of restore readiness.
 
@@ -975,8 +975,8 @@ v-borg-restore-checkup admin 2025-10-16_17-43-57
 2025-10-17 09:00:03 PASSED: Archive can be extracted (dry-run)
 2025-10-17 09:00:03 ========== Testing Database Dumps ==========
 2025-10-17 09:00:04 PASSED: Database dump shop_db is valid
-2025-10-17 09:00:04 ========== Testing MyVesta Config ==========
-2025-10-17 09:00:05 PASSED: MyVesta config files are readable
+2025-10-17 09:00:04 ========== Testing myVesta Config ==========
+2025-10-17 09:00:05 PASSED: myVesta config files are readable
 
 2025-10-17 09:00:05 ========== RESTORE CHECKUP SUMMARY ==========
 2025-10-17 09:00:05 User: admin
@@ -1162,7 +1162,7 @@ v-borg-backup-user admin
 # - Syncing to remote server...
 # - User repository synced successfully
 # - Database repository synced successfully
-# - MyVesta config synced successfully
+# - myVesta config synced successfully
 ```
 
 **Restore Behavior**:
@@ -1337,7 +1337,7 @@ v-borg-restore-user ARCHIVE admin
 │   ├── admin/              # Borg repository for 'admin' databases
 │   ├── john/               # Borg repository for 'john' databases
 │   └── ...
-├── vesta/                   # MyVesta configuration backups (shared)
+├── vesta/                   # myVesta configuration backups (shared)
 │   └── [archives: USER-YYYY-MM-DD_HH-MM-SS]
 ├── etc/                     # System /etc backups
 │   └── [archives: YYYY-MM-DD_HH-MM-SS]

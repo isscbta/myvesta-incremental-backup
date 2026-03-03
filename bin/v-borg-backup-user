@@ -150,9 +150,9 @@ if [ -d "$VESTA_USER_DIR" ]; then
         >> "$LOG_FILE" 2>&1
     
     if [ $? -eq 0 ]; then
-        echo "$(get_timestamp) MyVesta config backup completed successfully" | tee -a "$LOG_FILE"
+        echo "$(get_timestamp) myVesta config backup completed successfully" | tee -a "$LOG_FILE"
     else
-        echo "$(get_timestamp) Error: MyVesta config backup failed" | tee -a "$LOG_FILE"
+        echo "$(get_timestamp) Error: myVesta config backup failed" | tee -a "$LOG_FILE"
         BACKUP_FAILED=1
     fi
     
@@ -265,7 +265,7 @@ if [ "$BACKUP_MODE" = "both" ] && [ -z "$BACKUP_FAILED" ]; then
         fi
         
         # Sync Vesta repo (only user's archives)
-        echo "$(get_timestamp) Syncing MyVesta config to remote..." | tee -a "$LOG_FILE"
+        echo "$(get_timestamp) Syncing myVesta config to remote..." | tee -a "$LOG_FILE"
         if [ -n "$REMOTE_BACKUP_PASSWORD" ]; then
             rsync -avz -e "sshpass -p '$REMOTE_BACKUP_PASSWORD' ssh -p $REMOTE_BACKUP_PORT -o StrictHostKeyChecking=no" \
                 "$VESTA_REPO/" "${REMOTE_BACKUP_SERVER}:${REMOTE_BACKUP_DIR}/vesta/" >> "$LOG_FILE" 2>&1
@@ -275,9 +275,9 @@ if [ "$BACKUP_MODE" = "both" ] && [ -z "$BACKUP_FAILED" ]; then
         fi
         
         if [ $? -eq 0 ]; then
-            echo "$(get_timestamp) MyVesta config synced successfully" | tee -a "$LOG_FILE"
+            echo "$(get_timestamp) myVesta config synced successfully" | tee -a "$LOG_FILE"
         else
-            echo "$(get_timestamp) Warning: MyVesta config sync failed" | tee -a "$LOG_FILE"
+            echo "$(get_timestamp) Warning: myVesta config sync failed" | tee -a "$LOG_FILE"
         fi
     else
         # REMOTE_SYNC_METHOD="borg" - create separate remote repos (not implemented yet)

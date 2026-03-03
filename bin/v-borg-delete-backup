@@ -107,7 +107,7 @@ if check_archive_exists "$VESTA_REPO" "$VESTA_ARCHIVE_NAME"; then
     borg delete "$VESTA_REPO::$VESTA_ARCHIVE_NAME" 2>&1
     
     if [ $? -eq 0 ]; then
-        echo "$(get_timestamp) MyVesta config archive deleted successfully"
+        echo "$(get_timestamp) myVesta config archive deleted successfully"
     else
         echo "$(get_timestamp) Warning: Failed to delete myVesta config archive"
     fi

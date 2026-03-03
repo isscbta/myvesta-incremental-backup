@@ -217,7 +217,7 @@ fi
 # Check if vesta archive exists (archive name format: USER-ARCHIVE_NAME)
 VESTA_ARCHIVE_NAME="$user-$ARCHIVE_NAME"
 if ! check_archive_exists "$VESTA_REPO" "$VESTA_ARCHIVE_NAME"; then
-    echo "Warning: MyVesta config archive not found for $VESTA_ARCHIVE_NAME"
+    echo "Warning: myVesta config archive not found for $VESTA_ARCHIVE_NAME"
     echo "Continuing with user data restore only..."
 fi
 
@@ -278,7 +278,7 @@ if [ "$RESTORE_MODE" = "full" ]; then
     if [ $? -eq 0 ]; then
         # Copy restored config to vesta (--delete removes files not in backup)
         rsync -a --delete "$TEMP_RESTORE_DIR/vesta/$VESTA_USER_DIR/" "$VESTA_USER_DIR/" >> "$LOG_FILE" 2>&1
-        echo "$(get_timestamp) MyVesta config restored successfully" | tee -a "$LOG_FILE"
+        echo "$(get_timestamp) myVesta config restored successfully" | tee -a "$LOG_FILE"
     else
         echo "$(get_timestamp) Error: Failed to restore myVesta config" | tee -a "$LOG_FILE"
         RESTORE_FAILED=1
