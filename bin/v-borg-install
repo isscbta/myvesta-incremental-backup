@@ -172,6 +172,17 @@ else
     exit 1
 fi
 
+# Download borg-backup.conf.template (per-user config template)
+print_info "Downloading borg-backup.conf.template..."
+if wget -q -O borg-backup.conf.template "${GITHUB_RAW_URL}/conf/borg-backup.conf.template" 2>/dev/null; then
+    mv borg-backup.conf.template /usr/local/vesta/conf/borg-backup.conf.template
+    chmod 644 /usr/local/vesta/conf/borg-backup.conf.template
+    chown root:root /usr/local/vesta/conf/borg-backup.conf.template
+    print_success "Per-user config template installed: /usr/local/vesta/conf/borg-backup.conf.template"
+else
+    print_error "Failed to download borg-backup.conf.template (optional, continuing)"
+fi
+
 #----------------------------------------------------------#
 #                Download Function Library                 #
 #----------------------------------------------------------#

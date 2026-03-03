@@ -46,51 +46,18 @@ A comprehensive, production-ready incremental backup system for myVesta Control 
 - myVesta Control Panel installed
 - Debian 8-12 or compatible Linux distribution
 - Root access
-- Borg Backup installed
 
-### Step 1: Install Borg Backup
+### Install
 
-```bash
-apt update
-apt install borgbackup
-```
-
-Verify installation:
-```bash
-borg --version
-```
-
-### Step 2: Copy System Files
-
-Clone the repository and copy files to your myVesta installation:
+Download and run the installer. It will install Borg Backup, create directories, and download all configuration and scripts from GitHub:
 
 ```bash
-# Clone from GitHub
-git clone https://github.com/isscbta/myvesta-incremental-backup.git
-cd myvesta-incremental-backup
-
-# Copy configuration files
-cp conf/borg.conf conf/borg-backup.conf.template /usr/local/vesta/conf/
-chmod 600 /usr/local/vesta/conf/borg.conf
-
-# Copy function library
-cp func/borg.sh /usr/local/vesta/func/
-chmod 644 /usr/local/vesta/func/borg.sh
-
-# Copy all commands
-cp bin/* /usr/local/vesta/bin/
-chmod +x /usr/local/vesta/bin/v-borg-*
+wget -O /usr/local/vesta/bin/v-borg-install https://raw.githubusercontent.com/isscbta/myvesta-incremental-backup/main/bin/v-borg-install
+chmod +x /usr/local/vesta/bin/v-borg-install
+v-borg-install
 ```
 
-### Step 3: Create Directory Structure
-
-```bash
-mkdir -p /var/log/borg
-mkdir -p /backup/borg
-chmod 755 /backup/borg
-```
-
-### Step 4: Configure
+### Configure
 
 Edit `/usr/local/vesta/conf/borg.conf` and configure at minimum:
 - `BACKUP_MODE` (local, remote, or both)
@@ -99,7 +66,7 @@ Edit `/usr/local/vesta/conf/borg.conf` and configure at minimum:
 
 See [Configuration](#configuration) section for details.
 
-### Step 5: Test Installation
+### Test
 
 ```bash
 # Test backup for a user
