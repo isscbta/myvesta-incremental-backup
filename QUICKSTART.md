@@ -1,90 +1,90 @@
 # Quick Start Guide - myVesta Borg Incremental Backup
 
-Brzi vodič za postavljanje i korišćenje novog sistema inkrementalnih bekapa.
+A quick guide for setting up and using the new incremental backup system.
 
-## Instalacija (5 minuta)
+## Installation (5 minutes)
 
-### 1. Instalirajte Borg Backup i konfigurirajte sistem
+### 1. Install Borg Backup and configure the system
 
 ```bash
-cd /root/scripts/myvesta-borg-incremental-backups/new-borg
-./bin/v-install-borg-backup
+cd /root/scripts/myvesta-borg-incremental-backups
+./bin/v-borg-install
 ```
 
-Instalacioni wizard će vas voditi kroz:
-- Instalaciju Borg paketa
-- Kreiranje folder strukture
-- Konfiguraciju backup moda (local/remote/both)
-- Podešavanje enkripcije (opciono)
-- Postavljanje cron job-a
+The installation wizard will guide you through:
+- Borg package installation
+- Folder structure creation
+- Backup mode configuration (local/remote/both)
+- Encryption setup (optional)
+- Cron job configuration
 
-### 2. Testiranje
+### 2. Testing
 
 ```bash
-# Bekap jednog korisnika
+# Backup a single user
 v-borg-backup-user admin
 
-# Provera bekapa
+# Verify backup
 v-borg-list-backups admin
 
-# Test restore (opcionalno)
+# Test restore (optional)
 v-borg-restore-user 2025-10-14 testuser
 ```
 
-## Osnovne Komande
+## Basic Commands
 
-### Backup Komande
+### Backup Commands
 
 ```bash
-# Bekap jednog korisnika
+# Backup a single user
 v-borg-backup-user USERNAME
 
-# Bekap svih korisnika
+# Backup all users
 v-borg-backup-users
 
-# Bekap sistema (/etc, /usr/local/vesta, /root/scripts)
-v-backup-system-incremental
+# System backup (/etc, /usr/local/vesta, /root/scripts)
+v-borg-backup-system
 ```
 
-### Pregled Bekapa
+### Viewing Backups
 
 ```bash
-# Lista bekapa za korisnika
+# List backups for a user
 v-borg-list-backups USERNAME
 
-# Formatiranje output-a
+# Formatted output
 v-borg-list-backups USERNAME json
 v-borg-list-backups USERNAME csv
 ```
 
-### Restore Komande
+### Restore Commands
 
 ```bash
-# Pun restore korisnika
+# Full user restore
 v-borg-restore-user YYYY-MM-DD USERNAME
 
-# Parcijalni restore - samo WEB
+# Partial restore - WEB only
 v-borg-restore-user YYYY-MM-DD USERNAME "domain1.com,domain2.com" "" "" ""
 
-# Parcijalni restore - samo baze
+# Partial restore - databases only
 v-borg-restore-user YYYY-MM-DD USERNAME "" "" "" "database1,database2"
 
-# Restore svega za WEB i DB
+# Restore everything for WEB and DB
 v-borg-restore-user YYYY-MM-DD USERNAME "*" "" "" "*"
 ```
 
-### Brisanje Bekapa
+### Deleting Backups
 
 ```bash
-# Brisanje specifičnog bekapa
+# Delete a specific backup
 v-borg-delete-backup USERNAME YYYY-MM-DD
 ```
 
-## Konfiguracija
+## Configuration
 
-Glavni konfiguracioni fajl: `/usr/local/vesta/conf/borg.conf`
+Main configuration file: `/usr/local/vesta/conf/borg.conf`
 
-### Lokalni Backup
+### Local Backup
 
 ```bash
 BACKUP_MODE="local"
@@ -100,44 +100,44 @@ REMOTE_BACKUP_PORT="23"
 REMOTE_BACKUP_DIR="/home/borg"
 ```
 
-Pre prvog remote bekapa, podesite SSH ključeve:
+Before the first remote backup, set up SSH keys:
 
 ```bash
 ssh-keygen -t ed25519
 ssh-copy-id -p 23 u123456@u123456.your-storagebox.de
 ```
 
-### Both Mode (Lokalno + Remote Sync)
+### Both Mode (Local + Remote Sync)
 
 ```bash
 BACKUP_MODE="both"
 REMOTE_SYNC_METHOD="rsync"
 ```
 
-### Enkripcija
+### Encryption
 
 ```bash
-# Bez enkripcije (default)
+# No encryption (default)
 ENCRYPTION_MODE="none"
 
-# Sa enkripcijom
+# With encryption
 ENCRYPTION_MODE="repokey-blake2"
-BORG_PASSPHRASE="vasa-jaka-lozinka"
+BORG_PASSPHRASE="your-secure-password"
 ```
 
-⚠️ **VAŽNO**: Čuvajte lozinku na sigurnom mestu! Bez nje ne možete restore-ovati enkriptovane bekape.
+⚠️ **IMPORTANT**: Keep the passphrase in a safe place! Without it you cannot restore encrypted backups.
 
 ### Retention Policy
 
 ```bash
-BACKUP_DAYS=30      # Drži dnevne bekape 30 dana
-BACKUP_WEEKS=4      # Drži nedeljne bekape 4 nedelje  
-BACKUP_MONTHS=6     # Drži mesečne bekape 6 meseci
+BACKUP_DAYS=30      # Keep daily backups for 30 days
+BACKUP_WEEKS=4      # Keep weekly backups for 4 weeks  
+BACKUP_MONTHS=6     # Keep monthly backups for 6 months
 ```
 
-### Centralizovane Exclusions
+### Centralized Exclusions
 
-U `borg.conf`, možete dodati globalne exclude patterne:
+In `borg.conf`, you can add global exclude patterns:
 
 ```bash
 EXCLUDE_PATTERNS=(
@@ -147,72 +147,72 @@ EXCLUDE_PATTERNS=(
     "*/drush-backups"
     "web/*/public_html/wp-content/cache"
     "web/*/public_html/wp-content/uploads/cache"
-    # Dodajte dodatne patterne...
+    # Add additional patterns...
 )
 ```
 
-## Automatizacija
+## Automation
 
-### Dnevni Cron Job
+### Daily Cron Job
 
-Fajl: `/etc/cron.d/vesta-borg-backup`
+File: `/etc/cron.d/vesta-borg-backup`
 
 ```bash
-# Dnevni bekap u 4:00
+# Daily backup at 4:00 AM
 0 4 * * * root /usr/local/vesta/bin/v-borg-backup-users > /var/log/borg/backup_$(date +\%F).log 2>&1
 ```
 
-## Logovi
+## Logs
 
-Logovi se nalaze u `/var/log/borg/`:
+Logs are located in `/var/log/borg/`:
 
 ```bash
-# Pregled današnjeg loga
+# View today's log
 tail -f /var/log/borg/backup_$(date +%F).log
 
-# Lista svih logova
+# List all logs
 ls -lh /var/log/borg/
 ```
 
-## Struktura Repozitorijuma
+## Repository Structure
 
 ```
 /backup/borg/
 ├── home/
-│   ├── admin/          # Bekap admin user home direktorijuma
-│   ├── john/           # Bekap john user home direktorijuma
+│   ├── admin/          # Backup of admin user home directory
+│   ├── john/           # Backup of john user home directory
 │   └── ...
 ├── db/
-│   ├── admin/          # Bekap admin baza
-│   ├── john/           # Bekap john baza
+│   ├── admin/          # Backup of admin databases
+│   ├── john/           # Backup of john databases
 │   └── ...
-├── vesta/              # Bekap myVesta konfiguracija
-├── etc/                # Bekap /etc
-└── scripts/            # Bekap /root/scripts
+├── vesta/              # Backup of myVesta configuration
+├── etc/                # Backup of /etc
+└── scripts/            # Backup of /root/scripts
 ```
 
-## Česte Komande
+## Common Commands
 
-### Provera verzije Borg-a
+### Check Borg version
 
 ```bash
 borg --version
 ```
 
-### Ručno listanje arhiva
+### Manual archive listing
 
 ```bash
 borg list /backup/borg/home/admin
 ```
 
-### Provera prostora
+### Check disk space
 
 ```bash
 df -h /backup
 borg info /backup/borg/home/admin
 ```
 
-### Test SSH konekcije (za remote)
+### Test SSH connection (for remote)
 
 ```bash
 ssh -p 23 u123456@u123456.your-storagebox.de
@@ -222,65 +222,63 @@ ssh -p 23 u123456@u123456.your-storagebox.de
 
 ### "Repository does not exist"
 
-Prvi bekap za korisnika automatski kreira repozitorijum. Ako vidite ovu grešku:
+The first backup for a user automatically creates the repository. If you see this error:
 
 ```bash
-# Ručno inicijalizacija (nije potrebno obično)
+# Manual initialization (usually not needed)
 borg init --encryption=none /backup/borg/home/USERNAME
 ```
 
 ### "Passphrase required"
 
-Proverite da je `BORG_PASSPHRASE` postavljen u `/usr/local/vesta/conf/borg.conf`
+Verify that `BORG_PASSPHRASE` is set in `/usr/local/vesta/conf/borg.conf`
 
-### Remote bekap ne radi
+### Remote backup not working
 
 ```bash
-# Test SSH konekcije
+# Test SSH connection
 ssh -p 23 u123456@u123456.your-storagebox.de
 
-# Provera SSH ključeva
+# Check SSH keys
 ls -la ~/.ssh/id_*
 
-# Kopiranje ključa ponovo
+# Copy key again
 ssh-copy-id -p 23 u123456@u123456.your-storagebox.de
 ```
 
-## Migracija sa Starog Sistema
+## Migration from the Old System
 
-Novi sistem može raditi paralelno sa starim tar-based sistemom:
+The new system can run in parallel with the old tar-based system:
 
-1. Instalirajte novi sistem
-2. Pustite oba sistema da rade neko vreme
-3. Testirajte restore sa novog sistema
-4. Kada budete sigurni, isključite stari cron
-5. Zadržite stare bekape za vašu retention period
+1. Install the new system
+2. Let both systems run for a while
+3. Test restores from the new system
+4. When confident, disable the old cron
+5. Keep old backups for your retention period
 
-## Dodatna Dokumentacija
+## Additional Documentation
 
-- Detaljna dokumentacija: `new-borg/README.md`
-- Konfiguracija: `new-borg/conf/borg.conf`
-- Funkcije: `new-borg/func/borg.sh`
+- Full documentation: `README.md`
+- Configuration: `conf/borg.conf`
+- Functions: `func/borg.sh`
 
-## Podrška
+## Support
 
-Za pitanja i probleme, proverite:
-- `cursor-mdc-files/overview.mdc` - Pregled projekta
-- `cursor-mdc-files/Install and Configure BorgBackup on Hetzner.mdc` - Hetzner setup
+For questions and issues, check:
+- Project overview documentation
+- Hetzner setup guide for remote backups
 
-## Važne Napomene
+## Important Notes
 
-✓ **Sve komande prate myVesta v- konvenciju**  
-✓ **Config-driven arhitektura - nema odvojenih remote komandi**  
-✓ **Centralizovane exclusions sa per-user override mogućnošću**  
-✓ **Podrška za parcijalni restore (WEB/DNS/MAIL/DB)**  
-✓ **MySQL-only (PostgreSQL uklonjen)**  
-✓ **Automatski repo init na prvom bekap-u**
+✓ **All commands follow myVesta v- convention**  
+✓ **Config-driven architecture - no separate remote commands**  
+✓ **Centralized exclusions with per-user override capability**  
+✓ **Support for partial restore (WEB/DNS/MAIL/DB)**  
+✓ **MySQL-only (PostgreSQL removed)**  
+✓ **Automatic repo init on first backup**
 
 ---
 
 **Status**: Production Ready ✓  
-**Verzija**: 1.0  
-**Datum**: Oktober 2025
-
-
+**Version**: 1.0  
+**Date**: October 2025
