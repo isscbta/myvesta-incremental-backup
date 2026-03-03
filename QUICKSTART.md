@@ -7,8 +7,15 @@ A quick guide for setting up and using the new incremental backup system.
 ### 1. Install Borg Backup and configure the system
 
 ```bash
-cd /root/scripts/myvesta-borg-incremental-backups
+# Option A: Clone and run installer
+git clone https://github.com/isscbta/myvesta-incremental-backup.git
+cd myvesta-incremental-backup
 ./bin/v-borg-install
+
+# Option B: Direct download and run
+wget -O /usr/local/vesta/bin/v-borg-install https://raw.githubusercontent.com/isscbta/myvesta-incremental-backup/main/bin/v-borg-install
+chmod +x /usr/local/vesta/bin/v-borg-install
+v-borg-install
 ```
 
 The installation wizard will guide you through:

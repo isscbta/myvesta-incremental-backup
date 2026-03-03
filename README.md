@@ -62,15 +62,24 @@ borg --version
 
 ### Step 2: Copy System Files
 
-Copy the `new-borg` directory to your myVesta installation:
+Clone the repository and copy files to your myVesta installation:
 
 ```bash
-# If you have the repository locally
-cp -r new-borg /usr/local/vesta/
+# Clone from GitHub
+git clone https://github.com/isscbta/myvesta-incremental-backup.git
+cd myvesta-incremental-backup
 
-# Or clone from GitHub (adjust URL)
-git clone https://github.com/yourusername/myvesta-borg-backup.git
-cp -r myvesta-borg-backup/new-borg /usr/local/vesta/
+# Copy configuration files
+cp conf/borg.conf conf/borg-backup.conf.template /usr/local/vesta/conf/
+chmod 600 /usr/local/vesta/conf/borg.conf
+
+# Copy function library
+cp func/borg.sh /usr/local/vesta/func/
+chmod 644 /usr/local/vesta/func/borg.sh
+
+# Copy all commands
+cp bin/* /usr/local/vesta/bin/
+chmod +x /usr/local/vesta/bin/v-borg-*
 ```
 
 ### Step 3: Create Directory Structure
@@ -81,26 +90,7 @@ mkdir -p /backup/borg
 chmod 755 /backup/borg
 ```
 
-### Step 4: Install Configuration
-
-```bash
-# Copy configuration file
-cp /usr/local/vesta/new-borg/conf/borg.conf /usr/local/vesta/conf/
-chmod 600 /usr/local/vesta/conf/borg.conf
-
-# Copy function library
-cp /usr/local/vesta/new-borg/func/borg.sh /usr/local/vesta/func/
-chmod 644 /usr/local/vesta/func/borg.sh
-
-# Copy all commands
-cp /usr/local/vesta/new-borg/bin/* /usr/local/vesta/bin/
-chmod +x /usr/local/vesta/bin/v-*-incremental
-chmod +x /usr/local/vesta/bin/v-backup-*
-chmod +x /usr/local/vesta/bin/v-restore-*
-chmod +x /usr/local/vesta/bin/v-borg-install
-```
-
-### Step 5: Configure
+### Step 4: Configure
 
 Edit `/usr/local/vesta/conf/borg.conf` and configure at minimum:
 - `BACKUP_MODE` (local, remote, or both)
@@ -109,7 +99,7 @@ Edit `/usr/local/vesta/conf/borg.conf` and configure at minimum:
 
 See [Configuration](#configuration) section for details.
 
-### Step 6: Test Installation
+### Step 5: Test Installation
 
 ```bash
 # Test backup for a user
@@ -406,7 +396,7 @@ BORG_BACKUP_USER_DIRS='home'
 **Creating Per-User Config**:
 ```bash
 # Copy template
-cp /usr/local/vesta/new-borg/conf/borg-backup.conf.template \
+cp /usr/local/vesta/conf/borg-backup.conf.template \
    /usr/local/vesta/data/users/USERNAME/borg-backup.conf
 
 # Edit as needed
@@ -1687,8 +1677,8 @@ If migrating from `old-borg` directory:
 
 4. **Update CRON Jobs**:
    ```bash
-   # Update paths from old-borg to new-borg
-   sed -i 's/old-borg/new-borg/g' /etc/cron.d/vesta-borg-backup
+   # Ensure cron points to v-borg commands in /usr/local/vesta/bin/
+   # Example: 0 4 * * * root /usr/local/vesta/bin/v-borg-backup-users ...
    ```
 
 5. **Test Everything**:
@@ -1701,10 +1691,7 @@ If migrating from `old-borg` directory:
 
 - **Main Documentation**: This README
 - **Quick Start Guide**: `QUICKSTART.md`
-- **Implementation Status**: `IMPLEMENTATION-STATUS.md`
-- **Architecture Overview**: `cursor-mdc-files/overview.mdc`
-- **Hetzner Setup**: `cursor-mdc-files/Install and Configure BorgBackup on Hetzner.mdc`
-- **Script Internals**: `cursor-mdc-files/how-the-main-bash-scripts-work.mdc`
+- **Repository**: https://github.com/isscbta/myvesta-incremental-backup
 
 ## License
 
