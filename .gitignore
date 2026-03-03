@@ -1,0 +1,11 @@
+# Test artifacts and scripts - not for distribution
+tests/
+
+# Internal development - not for distribution
+IMPLEMENTATION-STATUS.md
+
+# Old/backup files
+*.old
+
+# macOS
+.DS_Store

@@ -1,0 +1,170 @@
+#!/bin/bash
+# info: list user backup archives
+# options: USER [FORMAT]
+#
+# This command lists all backup archives for a user.
+
+#----------------------------------------------------------#
+#                Variable Definition                       #
+#----------------------------------------------------------#
+
+# Arguments
+user=$1
+format=${2-shell}
+
+# Source shared functions
+if [ -f "/usr/local/vesta/func/borg.sh" ]; then
+    source /usr/local/vesta/func/borg.sh
+else
+    # Try local development path
+    SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null && pwd )"
+    NEW_BORG_DIR="$(dirname "$SCRIPT_DIR")"
+    source "$NEW_BORG_DIR/func/borg.sh"
+fi
+
+# Source myVesta environment
+source /etc/profile.d/vesta.sh 2>/dev/null || source /etc/profile
+
+#----------------------------------------------------------#
+#                    Verifications                         #
+#----------------------------------------------------------#
+
+check_borg_installed
+source_borg_config
+
+# Check arguments
+if [ -z "$user" ]; then
+    echo "Usage: v-borg-list-backups USER [FORMAT]"
+    echo "Error: USER argument is required"
+    exit 1
+fi
+
+# Check if user exists
+if ! check_user_exists "$user"; then
+    echo "Error: User '$user' does not exist"
+    exit 1
+fi
+
+# Build repository path
+# For "both" mode, prefer local but fallback to remote if local doesn't exist
+if [ "$BACKUP_MODE" = "both" ]; then
+    # Try local first
+    LOCAL_USER_REPO=$(build_borg_repo_path "user" "$user")
+    if borg list "$LOCAL_USER_REPO" &>/dev/null 2>&1; then
+        USER_REPO="$LOCAL_USER_REPO"
+    else
+        # Local repo doesn't exist, use remote
+        REMOTE_BASE="ssh://${REMOTE_BACKUP_SERVER}:${REMOTE_BACKUP_PORT}${REMOTE_BACKUP_DIR}"
+        USER_REPO="${REMOTE_BASE}/home/$user"
+    fi
+else
+    # For "local" or "remote" mode, use configured path
+    USER_REPO=$(build_borg_repo_path "user" "$user")
+fi
+
+# Check if repository exists
+if ! borg list "$USER_REPO" &>/dev/null; then
+    case $format in
+        json)
+            echo "{}"
+            ;;
+        *)
+            echo "No backups found for user $user"
+            ;;
+    esac
+    exit 0
+fi
+
+#----------------------------------------------------------#
+#                List Archives                             #
+#----------------------------------------------------------#
+
+# Get archive list
+# Borg list default format: "archive_name  date time [hash]"
+ARCHIVES=$(borg list "$USER_REPO" 2>/dev/null)
+
+if [ -z "$ARCHIVES" ]; then
+    case $format in
+        json)
+            echo "{}"
+            ;;
+        *)
+            echo "No archives found for user $user"
+            ;;
+    esac
+    exit 0
+fi
+
+case $format in
+    json)
+        echo "{"
+        first=true
+        while IFS= read -r line; do
+            if [ -z "$line" ]; then
+                continue
+            fi
+            
+            # Parse: "archive_name   Day, YYYY-MM-DD HH:MM:SS [hash]"
+            archive=$(echo "$line" | awk '{print $1}')
+            # Skip "Day," and get date
+            date=$(echo "$line" | awk '{print $3}')
+            time=$(echo "$line" | awk '{print $4}')
+            
+            if [ "$first" = true ]; then
+                first=false
+            else
+                echo ","
+            fi
+            
+            echo -n "  \"$archive\": {"
+            echo -n "\"DATE\": \"$date\", "
+            echo -n "\"TIME\": \"$time\""
+            echo -n "}"
+        done <<< "$ARCHIVES"
+        echo ""
+        echo "}"
+        ;;
+        
+    plain)
+        echo "$ARCHIVES" | while IFS= read -r line; do
+            if [ -z "$line" ]; then
+                continue
+            fi
+            archive=$(echo "$line" | awk '{print $1}')
+            date=$(echo "$line" | awk '{print $3}')
+            time=$(echo "$line" | awk '{print $4}')
+            echo -e "$archive\t$date\t$time"
+        done
+        ;;
+        
+    csv)
+        echo "ARCHIVE,DATE,TIME"
+        echo "$ARCHIVES" | while IFS= read -r line; do
+            if [ -z "$line" ]; then
+                continue
+            fi
+            archive=$(echo "$line" | awk '{print $1}')
+            date=$(echo "$line" | awk '{print $3}')
+            time=$(echo "$line" | awk '{print $4}')
+            echo "$archive,$date,$time"
+        done
+        ;;
+        
+    shell|*)
+        echo "ARCHIVE                  DATE            TIME"
+        echo "-------                  ----            ----"
+        echo "$ARCHIVES" | while IFS= read -r line; do
+            if [ -z "$line" ]; then
+                continue
+            fi
+            archive=$(echo "$line" | awk '{print $1}')
+            date=$(echo "$line" | awk '{print $3}')
+            time=$(echo "$line" | awk '{print $4}')
+            printf "%-24s %-15s %s\n" "$archive" "$date" "$time"
+        done
+        ;;
+esac
+
+exit 0
+
+

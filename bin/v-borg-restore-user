@@ -1,0 +1,622 @@
+#!/bin/bash
+# info: restore user from borg backup
+# options: DATE USER [WEB] [DNS] [MAIL] [DB]
+#
+# This command restores a user from Borg incremental backup.
+# Supports full restore and partial restore of specific components.
+
+#----------------------------------------------------------#
+#                Variable Definition                       #
+#----------------------------------------------------------#
+
+# Arguments
+date=$1
+user=$2
+web=$3
+dns=$4
+mail=$5
+db=$6
+
+# Source myVesta environment first
+source /etc/profile.d/vesta.sh 2>/dev/null || source /etc/profile
+
+# Set VESTA_DIR if not already set
+if [ -z "$VESTA_DIR" ]; then
+    export VESTA_DIR="/usr/local/vesta"
+fi
+
+# Source shared functions
+if [ -f "/usr/local/vesta/func/borg.sh" ]; then
+    source /usr/local/vesta/func/borg.sh
+else
+    # Try local development path
+    SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null && pwd )"
+    NEW_BORG_DIR="$(dirname "$SCRIPT_DIR")"
+    source "$NEW_BORG_DIR/func/borg.sh"
+fi
+
+# Source myVesta functions
+source $VESTA_DIR/func/main.sh
+source $VESTA_DIR/func/domain.sh
+source $VESTA_DIR/func/rebuild.sh
+source $VESTA_DIR/conf/vesta.conf
+
+#----------------------------------------------------------#
+#                    Verifications                         #
+#----------------------------------------------------------#
+
+check_root
+check_borg_installed
+source_borg_config
+ensure_log_dir
+
+# Check arguments
+if [ -z "$date" ] || [ -z "$user" ]; then
+    echo "Usage: v-borg-restore-user ARCHIVE USER [WEB] [DNS] [MAIL] [DB]"
+    echo ""
+    echo "Arguments:"
+    echo "  ARCHIVE - Archive name or date pattern:"
+    echo "            Full: 2025-10-16_17-43-57 (exact archive)"
+    echo "            Date: 2025-10-16 (will find all archives from that date)"
+    echo "  USER    - Username to restore"
+    echo "  WEB     - Restore web domains (domain1,domain2 or '*' for all)"
+    echo "  DNS     - Restore DNS zones (domain1,domain2 or '*' for all)"
+    echo "  MAIL    - Restore mail domains (domain1,domain2 or '*' for all)"
+    echo "  DB      - Restore databases (db1,db2 or '*' for all)"
+    echo ""
+    echo "If no components specified, full user restore is performed"
+    echo ""
+    echo "Examples:"
+    echo "  v-borg-restore-user 2025-10-16_17-43-57 admin"
+    echo "  v-borg-restore-user 2025-10-16 admin '*' '*' '*' '*'"
+    exit 1
+fi
+
+# Build repository paths
+# For "both" mode, check if both local and remote exist, then ask user
+if [ "$BACKUP_MODE" = "both" ]; then
+    LOCAL_USER_REPO=$(build_borg_repo_path "user" "$user")
+    REMOTE_BASE="ssh://${REMOTE_BACKUP_SERVER}:${REMOTE_BACKUP_PORT}${REMOTE_BACKUP_DIR}"
+    REMOTE_USER_REPO="${REMOTE_BASE}/home/$user"
+    
+    LOCAL_EXISTS=0
+    REMOTE_EXISTS=0
+    LOCAL_HAS_ARCHIVE=0
+    REMOTE_HAS_ARCHIVE=0
+    
+    # Check if local repo exists and has the archive
+    if borg list "$LOCAL_USER_REPO" &>/dev/null 2>&1; then
+        LOCAL_EXISTS=1
+        # Check if archive exists in local repo (try exact match first, then pattern)
+        if check_archive_exists "$LOCAL_USER_REPO" "$date" 2>/dev/null; then
+            LOCAL_HAS_ARCHIVE=1
+        else
+            # Try pattern match
+            LOCAL_ARCHIVES=$(borg list "$LOCAL_USER_REPO" 2>/dev/null | awk '{print $1}' | grep "^${date}" | wc -l)
+            if [ "$LOCAL_ARCHIVES" -gt 0 ]; then
+                LOCAL_HAS_ARCHIVE=1
+            fi
+        fi
+    fi
+    
+    # Check if remote repo exists and has the archive
+    if borg list "$REMOTE_USER_REPO" &>/dev/null 2>&1; then
+        REMOTE_EXISTS=1
+        # Check if archive exists in remote repo
+        if check_archive_exists "$REMOTE_USER_REPO" "$date" 2>/dev/null; then
+            REMOTE_HAS_ARCHIVE=1
+        else
+            # Try pattern match
+            REMOTE_ARCHIVES=$(borg list "$REMOTE_USER_REPO" 2>/dev/null | awk '{print $1}' | grep "^${date}" | wc -l)
+            if [ "$REMOTE_ARCHIVES" -gt 0 ]; then
+                REMOTE_HAS_ARCHIVE=1
+            fi
+        fi
+    fi
+    
+    if [ "$LOCAL_HAS_ARCHIVE" -eq 1 ] && [ "$REMOTE_HAS_ARCHIVE" -eq 1 ]; then
+        # Both have the archive - ask user which one to use
+        echo ""
+        echo "=========================================="
+        echo "Both local and remote backups found!"
+        echo "=========================================="
+        echo "Archive: $date"
+        echo "Local:  $LOCAL_USER_REPO"
+        echo "Remote: $REMOTE_USER_REPO"
+        echo ""
+        echo "Which backup source would you like to use for restore?"
+        echo "  1) Local (faster, recommended)"
+        echo "  2) Remote"
+        echo ""
+        read -p "Enter choice [1/2] (default: 1): " -r RESTORE_SOURCE
+        echo ""
+        
+        if [ "$RESTORE_SOURCE" = "2" ]; then
+            USER_REPO="$REMOTE_USER_REPO"
+            DB_REPO="${REMOTE_BASE}/db/$user"
+            VESTA_REPO="${REMOTE_BASE}/vesta"
+            echo "Using remote repositories for restore"
+        else
+            USER_REPO="$LOCAL_USER_REPO"
+            DB_REPO=$(build_borg_repo_path "db" "$user")
+            VESTA_REPO=$(build_borg_repo_path "vesta" "")
+            echo "Using local repositories for restore (faster)"
+        fi
+    elif [ "$LOCAL_HAS_ARCHIVE" -eq 1 ]; then
+        # Only local has the archive
+        USER_REPO="$LOCAL_USER_REPO"
+        DB_REPO=$(build_borg_repo_path "db" "$user")
+        VESTA_REPO=$(build_borg_repo_path "vesta" "")
+        echo "Using local repositories for restore"
+    elif [ "$REMOTE_HAS_ARCHIVE" -eq 1 ]; then
+        # Only remote has the archive
+        USER_REPO="$REMOTE_USER_REPO"
+        DB_REPO="${REMOTE_BASE}/db/$user"
+        VESTA_REPO="${REMOTE_BASE}/vesta"
+        echo "Using remote repositories for restore"
+    elif [ "$LOCAL_EXISTS" -eq 1 ] || [ "$REMOTE_EXISTS" -eq 1 ]; then
+        # Repos exist but archive not found in either - will be handled by archive check below
+        # Prefer local if exists, otherwise remote
+        if [ "$LOCAL_EXISTS" -eq 1 ]; then
+            USER_REPO="$LOCAL_USER_REPO"
+            DB_REPO=$(build_borg_repo_path "db" "$user")
+            VESTA_REPO=$(build_borg_repo_path "vesta" "")
+        else
+            USER_REPO="$REMOTE_USER_REPO"
+            DB_REPO="${REMOTE_BASE}/db/$user"
+            VESTA_REPO="${REMOTE_BASE}/vesta"
+        fi
+    else
+        echo "Error: No backup repositories found (neither local nor remote)"
+        exit 1
+    fi
+else
+    # For "local" or "remote" mode, use configured path
+    USER_REPO=$(build_borg_repo_path "user" "$user")
+    DB_REPO=$(build_borg_repo_path "db" "$user")
+    VESTA_REPO=$(build_borg_repo_path "vesta" "")  # Shared repo, no user identifier
+fi
+
+# Find matching archive
+# If exact archive name provided, use it. If date pattern, find latest matching archive
+ARCHIVE_NAME=""
+if check_archive_exists "$USER_REPO" "$date"; then
+    # Exact match found
+    ARCHIVE_NAME="$date"
+else
+    # Try to find archives matching the date pattern
+    MATCHING_ARCHIVES=$(borg list "$USER_REPO" 2>/dev/null | awk '{print $1}' | grep "^${date}" | sort -r)
+    
+    if [ -z "$MATCHING_ARCHIVES" ]; then
+        echo "Error: No backup archives found matching '$date'"
+        echo ""
+        echo "Available archives:"
+        borg list "$USER_REPO" 2>/dev/null | awk '{print $1}'
+        exit 1
+    fi
+    
+    # Count matching archives
+    ARCHIVE_COUNT=$(echo "$MATCHING_ARCHIVES" | wc -l)
+    
+    if [ "$ARCHIVE_COUNT" -eq 1 ]; then
+        # Only one match, use it
+        ARCHIVE_NAME=$(echo "$MATCHING_ARCHIVES" | head -1)
+        echo "Found archive: $ARCHIVE_NAME"
+    else
+        # Multiple matches, let user choose
+        echo "Found $ARCHIVE_COUNT archives matching '$date':"
+        echo ""
+        echo "$MATCHING_ARCHIVES"
+        echo ""
+        echo "Multiple archives found. Please specify the exact archive name."
+        echo "Example: v-borg-restore-user $(echo "$MATCHING_ARCHIVES" | head -1) $user"
+        exit 1
+    fi
+fi
+
+# Check if vesta archive exists (archive name format: USER-ARCHIVE_NAME)
+VESTA_ARCHIVE_NAME="$user-$ARCHIVE_NAME"
+if ! check_archive_exists "$VESTA_REPO" "$VESTA_ARCHIVE_NAME"; then
+    echo "Warning: MyVesta config archive not found for $VESTA_ARCHIVE_NAME"
+    echo "Continuing with user data restore only..."
+fi
+
+#----------------------------------------------------------#
+#                Determine Restore Mode                    #
+#----------------------------------------------------------#
+
+# Determine if this is a full or partial restore
+if [ -z "$web" ] && [ -z "$dns" ] && [ -z "$mail" ] && [ -z "$db" ]; then
+    RESTORE_MODE="full"
+    echo "Mode: FULL user restore"
+else
+    RESTORE_MODE="partial"
+    echo "Mode: PARTIAL restore"
+    [ -n "$web" ] && echo "  - WEB: $web"
+    [ -n "$dns" ] && echo "  - DNS: $dns"
+    [ -n "$mail" ] && echo "  - MAIL: $mail"
+    [ -n "$db" ] && echo "  - DB: $db"
+fi
+
+#----------------------------------------------------------#
+#                Setup                                     #
+#----------------------------------------------------------#
+
+echo ""
+echo "==================================================="
+echo "STARTING RESTORE"
+echo "==================================================="
+echo "User: $user"
+echo "Archive: $ARCHIVE_NAME"
+echo "Mode: $RESTORE_MODE"
+echo "==================================================="
+echo ""
+
+START_TIME=$(date +%s)
+LOG_FILE="$LOG_DIR/restore-user-$user-$ARCHIVE_NAME.log"
+TEMP_RESTORE_DIR="/tmp/borg-restore-$$"
+
+echo "$(get_timestamp) Starting restore for user $user from archive $ARCHIVE_NAME" | tee "$LOG_FILE"
+
+#----------------------------------------------------------#
+#                Full User Restore                         #
+#----------------------------------------------------------#
+
+if [ "$RESTORE_MODE" = "full" ]; then
+    echo "$(get_timestamp) ========== FULL USER RESTORE ==========" | tee -a "$LOG_FILE"
+    
+    # Step 1: Restore myVesta configuration
+    echo "$(get_timestamp) Restoring myVesta configuration..." | tee -a "$LOG_FILE"
+    
+    VESTA_USER_DIR="$VESTA_DIR/data/users/$user"
+    mkdir -p "$TEMP_RESTORE_DIR/vesta"
+    
+    cd "$TEMP_RESTORE_DIR/vesta"
+    # Vesta archive name format: USER-ARCHIVE_NAME
+    borg extract "$VESTA_REPO::$VESTA_ARCHIVE_NAME" >> "$LOG_FILE" 2>&1
+    
+    if [ $? -eq 0 ]; then
+        # Copy restored config to vesta (--delete removes files not in backup)
+        rsync -a --delete "$TEMP_RESTORE_DIR/vesta/$VESTA_USER_DIR/" "$VESTA_USER_DIR/" >> "$LOG_FILE" 2>&1
+        echo "$(get_timestamp) MyVesta config restored successfully" | tee -a "$LOG_FILE"
+    else
+        echo "$(get_timestamp) Error: Failed to restore myVesta config" | tee -a "$LOG_FILE"
+        RESTORE_FAILED=1
+    fi
+    
+    # Step 2: Rebuild user
+    echo "$(get_timestamp) Rebuilding user..." | tee -a "$LOG_FILE"
+    v-rebuild-user "$user" >> "$LOG_FILE" 2>&1
+    
+    # Step 3: Restore user home directory
+    echo "$(get_timestamp) Restoring user home directory..." | tee -a "$LOG_FILE"
+    
+    USER_HOME="$HOME_DIR/$user"
+    mkdir -p "$TEMP_RESTORE_DIR/home"
+    
+    cd "$TEMP_RESTORE_DIR/home"
+    borg extract "$USER_REPO::$ARCHIVE_NAME" >> "$LOG_FILE" 2>&1
+    
+    if [ $? -eq 0 ]; then
+        # Copy restored files to user home (--delete removes files not in backup)
+        rsync -a --delete "$TEMP_RESTORE_DIR/home/$USER_HOME/" "$USER_HOME/" >> "$LOG_FILE" 2>&1
+        echo "$(get_timestamp) User home directory restored successfully" | tee -a "$LOG_FILE"
+    else
+        echo "$(get_timestamp) Error: Failed to restore user home directory" | tee -a "$LOG_FILE"
+        RESTORE_FAILED=1
+    fi
+    
+    # Step 4: Fix web permissions
+    echo "$(get_timestamp) Fixing web permissions..." | tee -a "$LOG_FILE"
+    if [ -d "$USER_HOME/web" ]; then
+        chown -R $user:$user "$USER_HOME/web" >> "$LOG_FILE" 2>&1
+    fi
+    
+    # Step 5: Restore databases
+    echo "$(get_timestamp) Restoring databases..." | tee -a "$LOG_FILE"
+    
+    DATABASES=$(get_user_mysql_databases "$user")
+    DB_COUNT=0
+    
+    if [ -n "$DATABASES" ]; then
+        while IFS= read -r database; do
+            if [ -z "$database" ]; then
+                continue
+            fi
+            
+            DB_ARCHIVE="$database-$ARCHIVE_NAME"
+            
+            if check_archive_exists "$DB_REPO" "$DB_ARCHIVE"; then
+                echo "$(get_timestamp) Restoring database: $database" | tee -a "$LOG_FILE"
+                
+                # Drop existing database
+                mysqladmin -f drop "$database" >> "$LOG_FILE" 2>&1
+                
+                # Create database
+                mysql -e "CREATE DATABASE IF NOT EXISTS \`$database\`" >> "$LOG_FILE" 2>&1
+                
+                # Restore from archive
+                borg extract --stdout "$DB_REPO::$DB_ARCHIVE" 2>>"$LOG_FILE" | mysql "$database" >> "$LOG_FILE" 2>&1
+                
+                if [ $? -eq 0 ]; then
+                    echo "$(get_timestamp) Database $database restored successfully" | tee -a "$LOG_FILE"
+                    ((DB_COUNT++))
+                else
+                    echo "$(get_timestamp) Error: Failed to restore database $database" | tee -a "$LOG_FILE"
+                    RESTORE_FAILED=1
+                fi
+            else
+                echo "$(get_timestamp) Warning: No backup found for database $database" | tee -a "$LOG_FILE"
+            fi
+        done <<< "$DATABASES"
+        
+        echo "$(get_timestamp) Restored $DB_COUNT databases" | tee -a "$LOG_FILE"
+    else
+        echo "$(get_timestamp) No databases found for user" | tee -a "$LOG_FILE"
+    fi
+    
+    # Step 6: Final rebuild
+    echo "$(get_timestamp) Final user rebuild..." | tee -a "$LOG_FILE"
+    v-rebuild-user "$user" >> "$LOG_FILE" 2>&1
+    
+fi
+
+#----------------------------------------------------------#
+#                Partial Restore - WEB                     #
+#----------------------------------------------------------#
+
+if [ "$RESTORE_MODE" = "partial" ] && [ -n "$web" ]; then
+    echo "$(get_timestamp) ========== RESTORING WEB DOMAINS ==========" | tee -a "$LOG_FILE"
+    
+    # Parse web domains
+    if [ "$web" = "*" ]; then
+        # Restore all web domains
+        WEB_DOMAINS=$(v-list-web-domains "$user" plain 2>/dev/null | awk '{print $1}' | tail -n +2)
+    else
+        WEB_DOMAINS=$(echo "$web" | tr ',' '\n')
+    fi
+    
+    mkdir -p "$TEMP_RESTORE_DIR/web"
+    cd "$TEMP_RESTORE_DIR/web"
+    
+    for domain in $WEB_DOMAINS; do
+        if [ -z "$domain" ]; then
+            continue
+        fi
+        
+        echo "$(get_timestamp) Restoring web domain: $domain" | tee -a "$LOG_FILE"
+        
+        # Extract web files and domain-specific configs
+        WEB_PATH="home/$user/web/$domain"
+        # Extract only config files for this specific domain
+        CONF_WEB_PATH="home/$user/conf/web"
+        
+        borg extract "$USER_REPO::$ARCHIVE_NAME" "$WEB_PATH" "$CONF_WEB_PATH" >> "$LOG_FILE" 2>&1
+        
+        if [ $? -eq 0 ]; then
+            # Restore web domain files (--delete ensures exact match with backup)
+            rsync -a --delete "$TEMP_RESTORE_DIR/web/home/$user/web/$domain/" "$HOME_DIR/$user/web/$domain/" >> "$LOG_FILE" 2>&1
+            
+            # Restore only config files for this domain (nginx, apache, SSL)
+            if [ -d "$TEMP_RESTORE_DIR/web/home/$user/conf/web" ]; then
+                echo "$(get_timestamp) Restoring web config for $domain..." | tee -a "$LOG_FILE"
+                
+                # Count config files for this domain
+                WEB_CONF_COUNT=$(ls "$TEMP_RESTORE_DIR/web/home/$user/conf/web/" 2>/dev/null | grep -c "$domain")
+                echo "$(get_timestamp) Found $WEB_CONF_COUNT config files for $domain" | tee -a "$LOG_FILE"
+                
+                # Restore domain-specific config files
+                if ls "$TEMP_RESTORE_DIR/web/home/$user/conf/web/$domain."* > /dev/null 2>&1; then
+                    rsync -a "$TEMP_RESTORE_DIR/web/home/$user/conf/web/$domain."* "$HOME_DIR/$user/conf/web/" >> "$LOG_FILE" 2>&1
+                fi
+                
+                # Restore SSL files
+                if ls "$TEMP_RESTORE_DIR/web/home/$user/conf/web/ssl.$domain."* > /dev/null 2>&1; then
+                    rsync -a "$TEMP_RESTORE_DIR/web/home/$user/conf/web/ssl.$domain."* "$HOME_DIR/$user/conf/web/" >> "$LOG_FILE" 2>&1
+                fi
+                
+                # Restore snginx files (Let's Encrypt)
+                if ls "$TEMP_RESTORE_DIR/web/home/$user/conf/web/s"*".$domain."* > /dev/null 2>&1; then
+                    rsync -a "$TEMP_RESTORE_DIR/web/home/$user/conf/web/s"*".$domain."* "$HOME_DIR/$user/conf/web/" >> "$LOG_FILE" 2>&1
+                fi
+                
+                echo "$(get_timestamp) Web config restored" | tee -a "$LOG_FILE"
+            fi
+            
+            chown -R $user:$user "$HOME_DIR/$user/web/$domain" >> "$LOG_FILE" 2>&1
+            echo "$(get_timestamp) Domain $domain restored successfully" | tee -a "$LOG_FILE"
+        else
+            echo "$(get_timestamp) Error: Failed to restore domain $domain" | tee -a "$LOG_FILE"
+            RESTORE_FAILED=1
+        fi
+    done
+fi
+
+#----------------------------------------------------------#
+#                Partial Restore - MAIL                    #
+#----------------------------------------------------------#
+
+if [ "$RESTORE_MODE" = "partial" ] && [ -n "$mail" ]; then
+    echo "$(get_timestamp) ========== RESTORING MAIL DOMAINS ==========" | tee -a "$LOG_FILE"
+    
+    # Parse mail domains
+    if [ "$mail" = "*" ]; then
+        MAIL_DOMAINS=$(v-list-mail-domains "$user" plain 2>/dev/null | awk '{print $1}' | tail -n +2)
+    else
+        MAIL_DOMAINS=$(echo "$mail" | tr ',' '\n')
+    fi
+    
+    mkdir -p "$TEMP_RESTORE_DIR/mail"
+    cd "$TEMP_RESTORE_DIR/mail"
+    
+    for domain in $MAIL_DOMAINS; do
+        if [ -z "$domain" ]; then
+            continue
+        fi
+        
+        echo "$(get_timestamp) Restoring mail domain: $domain" | tee -a "$LOG_FILE"
+        
+        MAIL_PATH="home/$user/mail/$domain"
+        CONF_MAIL_PATH="home/$user/conf/mail/$domain"
+        
+        borg extract "$USER_REPO::$ARCHIVE_NAME" "$MAIL_PATH" "$CONF_MAIL_PATH" >> "$LOG_FILE" 2>&1
+        
+        if [ $? -eq 0 ]; then
+            # Restore mail domain (--delete ensures exact match with backup)
+            rsync -a --delete "$TEMP_RESTORE_DIR/mail/home/$user/mail/$domain/" "$HOME_DIR/$user/mail/$domain/" >> "$LOG_FILE" 2>&1
+            
+            # Restore mail config for this domain only
+            if [ -d "$TEMP_RESTORE_DIR/mail/home/$user/conf/mail/$domain" ]; then
+                echo "$(get_timestamp) Restoring mail config for $domain..." | tee -a "$LOG_FILE"
+                
+                # Verify extracted files exist
+                CONF_FILE_COUNT=$(find "$TEMP_RESTORE_DIR/mail/home/$user/conf/mail/$domain" -type f 2>/dev/null | wc -l)
+                echo "$(get_timestamp) Found $CONF_FILE_COUNT config files to restore" | tee -a "$LOG_FILE"
+                
+                if [ $CONF_FILE_COUNT -gt 0 ]; then
+                    rsync -a --delete "$TEMP_RESTORE_DIR/mail/home/$user/conf/mail/$domain/" "$HOME_DIR/$user/conf/mail/$domain/" >> "$LOG_FILE" 2>&1
+                    echo "$(get_timestamp) Mail config restored" | tee -a "$LOG_FILE"
+                else
+                    echo "$(get_timestamp) Warning: No mail config files found in backup" | tee -a "$LOG_FILE"
+                fi
+            else
+                echo "$(get_timestamp) Warning: Mail config directory not found in backup" | tee -a "$LOG_FILE"
+            fi
+            
+            echo "$(get_timestamp) Mail domain $domain restored successfully" | tee -a "$LOG_FILE"
+        else
+            echo "$(get_timestamp) Error: Failed to restore mail domain $domain" | tee -a "$LOG_FILE"
+            RESTORE_FAILED=1
+        fi
+    done
+fi
+
+#----------------------------------------------------------#
+#                Partial Restore - DNS                     #
+#----------------------------------------------------------#
+
+if [ "$RESTORE_MODE" = "partial" ] && [ -n "$dns" ]; then
+    echo "$(get_timestamp) ========== RESTORING DNS ZONES ==========" | tee -a "$LOG_FILE"
+    
+    # Parse DNS domains
+    if [ "$dns" = "*" ]; then
+        DNS_DOMAINS=$(v-list-dns-domains "$user" plain 2>/dev/null | awk '{print $1}' | tail -n +2)
+    else
+        DNS_DOMAINS=$(echo "$dns" | tr ',' '\n')
+    fi
+    
+    mkdir -p "$TEMP_RESTORE_DIR/dns"
+    cd "$TEMP_RESTORE_DIR/dns"
+    
+    for domain in $DNS_DOMAINS; do
+        if [ -z "$domain" ]; then
+            continue
+        fi
+        
+        echo "$(get_timestamp) Restoring DNS zone: $domain" | tee -a "$LOG_FILE"
+        
+        # Extract DNS zone file
+        DNS_PATH="home/$user/conf/dns/$domain.db"
+        
+        borg extract "$USER_REPO::$ARCHIVE_NAME" "$DNS_PATH" >> "$LOG_FILE" 2>&1
+        
+        if [ $? -eq 0 ]; then
+            # Check if DNS zone file was extracted
+            if [ -f "$TEMP_RESTORE_DIR/dns/home/$user/conf/dns/$domain.db" ]; then
+                echo "$(get_timestamp) DNS zone file extracted successfully" | tee -a "$LOG_FILE"
+                
+                # Restore DNS zone
+                rsync -a "$TEMP_RESTORE_DIR/dns/home/$user/conf/dns/$domain.db" "$HOME_DIR/$user/conf/dns/" >> "$LOG_FILE" 2>&1
+                
+                # Rebuild DNS zone
+                v-rebuild-dns-domain "$user" "$domain" >> "$LOG_FILE" 2>&1
+                
+                echo "$(get_timestamp) DNS zone $domain restored successfully" | tee -a "$LOG_FILE"
+            else
+                echo "$(get_timestamp) Warning: DNS zone file not found in backup for $domain" | tee -a "$LOG_FILE"
+            fi
+        else
+            echo "$(get_timestamp) Error: Failed to restore DNS zone $domain" | tee -a "$LOG_FILE"
+            RESTORE_FAILED=1
+        fi
+    done
+fi
+
+#----------------------------------------------------------#
+#                Partial Restore - DB                      #
+#----------------------------------------------------------#
+
+if [ "$RESTORE_MODE" = "partial" ] && [ -n "$db" ]; then
+    echo "$(get_timestamp) ========== RESTORING DATABASES ==========" | tee -a "$LOG_FILE"
+    
+    # Parse databases
+    if [ "$db" = "*" ]; then
+        DATABASES=$(get_user_mysql_databases "$user")
+    else
+        DATABASES=$(echo "$db" | tr ',' '\n')
+    fi
+    
+    for database in $DATABASES; do
+        if [ -z "$database" ]; then
+            continue
+        fi
+        
+        DB_ARCHIVE="$database-$ARCHIVE_NAME"
+        
+        if check_archive_exists "$DB_REPO" "$DB_ARCHIVE"; then
+            echo "$(get_timestamp) Restoring database: $database" | tee -a "$LOG_FILE"
+            
+            mysqladmin -f drop "$database" >> "$LOG_FILE" 2>&1
+            mysql -e "CREATE DATABASE IF NOT EXISTS \`$database\`" >> "$LOG_FILE" 2>&1
+            borg extract --stdout "$DB_REPO::$DB_ARCHIVE" 2>>"$LOG_FILE" | mysql "$database" >> "$LOG_FILE" 2>&1
+            
+            if [ $? -eq 0 ]; then
+                echo "$(get_timestamp) Database $database restored successfully" | tee -a "$LOG_FILE"
+            else
+                echo "$(get_timestamp) Error: Failed to restore database $database" | tee -a "$LOG_FILE"
+                RESTORE_FAILED=1
+            fi
+        else
+            echo "$(get_timestamp) Error: Backup not found for database $database in archive $ARCHIVE_NAME" | tee -a "$LOG_FILE"
+            RESTORE_FAILED=1
+        fi
+    done
+fi
+
+#----------------------------------------------------------#
+#                Cleanup                                   #
+#----------------------------------------------------------#
+
+echo "$(get_timestamp) Cleaning up temporary files..." | tee -a "$LOG_FILE"
+rm -rf "$TEMP_RESTORE_DIR" 2>/dev/null || true
+
+#----------------------------------------------------------#
+#                Summary                                   #
+#----------------------------------------------------------#
+
+END_TIME=$(date +%s)
+RUNTIME=$((END_TIME - START_TIME))
+RUNTIME_MIN=$((RUNTIME / 60))
+
+if [ $RUNTIME_MIN -lt 1 ]; then
+    RUNTIME_MIN=1
+fi
+
+echo "$(get_timestamp) ========== RESTORE SUMMARY ==========" | tee -a "$LOG_FILE"
+echo "$(get_timestamp) User: $user" | tee -a "$LOG_FILE"
+echo "$(get_timestamp) Archive: $ARCHIVE_NAME" | tee -a "$LOG_FILE"
+echo "$(get_timestamp) Mode: $RESTORE_MODE" | tee -a "$LOG_FILE"
+echo "$(get_timestamp) Runtime: $RUNTIME_MIN minute(s)" | tee -a "$LOG_FILE"
+
+if [ -n "$RESTORE_FAILED" ]; then
+    echo "$(get_timestamp) Status: COMPLETED WITH ERRORS" | tee -a "$LOG_FILE"
+    echo "$(get_timestamp) Check log for details: $LOG_FILE" | tee -a "$LOG_FILE"
+    log_event "WARNING" "User restore for $user from archive $ARCHIVE_NAME completed with errors"
+    exit 1
+else
+    echo "$(get_timestamp) Status: SUCCESS" | tee -a "$LOG_FILE"
+    log_event "OK" "User $user restored successfully from archive $ARCHIVE_NAME"
+    exit 0
+fi
+
+

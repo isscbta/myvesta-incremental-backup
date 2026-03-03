@@ -1,0 +1,241 @@
+#!/bin/bash
+# info: test restore functionality without actually restoring
+# options: USER [ARCHIVE]
+#
+# This command tests restore functionality by verifying archive accessibility,
+# testing extraction, and validating database dumps and config files.
+
+#----------------------------------------------------------#
+#                Variable & Argument Definition            #
+#----------------------------------------------------------#
+
+# Arguments
+user=$1
+archive=$2
+
+# Source shared functions
+if [ -f "/usr/local/vesta/func/borg.sh" ]; then
+    source /usr/local/vesta/func/borg.sh
+else
+    # Try local development path
+    SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null && pwd )"
+    NEW_BORG_DIR="$(dirname "$SCRIPT_DIR")"
+    source "$NEW_BORG_DIR/func/borg.sh"
+fi
+
+# Source myVesta environment
+source /etc/profile.d/vesta.sh 2>/dev/null || source /etc/profile
+
+#----------------------------------------------------------#
+#                    Verifications                         #
+#----------------------------------------------------------#
+
+check_root
+check_borg_installed
+source_borg_config
+ensure_log_dir
+
+# Check arguments
+if [ -z "$user" ]; then
+    echo "Usage: v-borg-restore-checkup USER [ARCHIVE]"
+    echo "Error: USER argument is required"
+    exit 1
+fi
+
+# Check if user exists
+if ! check_user_exists "$user"; then
+    echo "Error: User '$user' does not exist"
+    exit 1
+fi
+
+#----------------------------------------------------------#
+#                Checkup Execution                         #
+#----------------------------------------------------------#
+
+CHECKUP_DATE=$(get_archive_date)
+LOG_FILE="$LOG_DIR/restore-checkup-$user-$CHECKUP_DATE.log"
+TEMP_DIR=$(mktemp -d)
+
+echo "$(get_timestamp) Starting restore checkup for user: $user" | tee "$LOG_FILE"
+
+TOTAL_CHECKS=0
+PASSED_CHECKS=0
+FAILED_CHECKS=0
+ERRORS=""
+
+# Cleanup function
+cleanup() {
+    rm -rf "$TEMP_DIR"
+}
+trap cleanup EXIT
+
+USER_REPO=$(build_borg_repo_path "user" "$user")
+DB_REPO=$(build_borg_repo_path "db" "$user")
+VESTA_REPO=$(build_borg_repo_path "vesta" "")
+
+# Determine which archive to check
+if [ -z "$archive" ]; then
+    # Get latest archive
+    if borg list "$USER_REPO" &>/dev/null; then
+        archive=$(borg list "$USER_REPO" 2>/dev/null | tail -n 1 | awk '{print $1}')
+    else
+        echo "Error: No archives found for user $user" | tee -a "$LOG_FILE"
+        exit 1
+    fi
+fi
+
+echo "$(get_timestamp) Testing archive: $archive" | tee -a "$LOG_FILE"
+
+#----------------------------------------------------------#
+#                Test Archive Accessibility                #
+#----------------------------------------------------------#
+
+echo "$(get_timestamp) ========== Testing Archive Accessibility ==========" | tee -a "$LOG_FILE"
+
+# Check if archive exists in user repo
+if borg list "$USER_REPO::$archive" &>/dev/null; then
+    echo "$(get_timestamp) PASSED: Archive exists in user repository" | tee -a "$LOG_FILE"
+    ((PASSED_CHECKS++))
+else
+    echo "$(get_timestamp) FAILED: Archive not found in user repository" | tee -a "$LOG_FILE"
+    ERRORS="${ERRORS}Archive $archive not found in user repository. "
+    ((FAILED_CHECKS++))
+fi
+((TOTAL_CHECKS++))
+
+#----------------------------------------------------------#
+#                Test Extract                              #
+#----------------------------------------------------------#
+
+echo "$(get_timestamp) ========== Testing Extract (Dry Run) ==========" | tee -a "$LOG_FILE"
+
+if borg extract --dry-run "$USER_REPO::$archive" >> "$LOG_FILE" 2>&1; then
+    echo "$(get_timestamp) PASSED: Archive can be extracted (dry-run)" | tee -a "$LOG_FILE"
+    ((PASSED_CHECKS++))
+else
+    echo "$(get_timestamp) FAILED: Cannot extract archive (dry-run failed)" | tee -a "$LOG_FILE"
+    ERRORS="${ERRORS}Archive extraction test failed. "
+    ((FAILED_CHECKS++))
+fi
+((TOTAL_CHECKS++))
+
+#----------------------------------------------------------#
+#                Test Database Dumps                       #
+#----------------------------------------------------------#
+
+echo "$(get_timestamp) ========== Testing Database Dumps ==========" | tee -a "$LOG_FILE"
+
+DATABASES=$(get_user_mysql_databases "$user")
+if [ -n "$DATABASES" ]; then
+    while IFS= read -r database; do
+        if [ -z "$database" ]; then
+            continue
+        fi
+        
+        DB_ARCHIVE_NAME="$database-$archive"
+        echo "$(get_timestamp) Testing database dump: $database" | tee -a "$LOG_FILE"
+        
+        if borg list "$DB_REPO::$DB_ARCHIVE_NAME" &>/dev/null; then
+            # Extract database dump to temp file
+            TEMP_DB_FILE="$TEMP_DIR/$database.sql"
+            if borg extract --stdout "$DB_REPO::$DB_ARCHIVE_NAME" > "$TEMP_DB_FILE" 2>>"$LOG_FILE"; then
+                # Check if file is valid SQL (basic check)
+                if [ -s "$TEMP_DB_FILE" ] && head -n 1 "$TEMP_DB_FILE" | grep -q "MySQL\|CREATE\|INSERT\|--"; then
+                    echo "$(get_timestamp) PASSED: Database dump $database is valid" | tee -a "$LOG_FILE"
+                    ((PASSED_CHECKS++))
+                else
+                    echo "$(get_timestamp) WARNING: Database dump $database may be invalid or empty" | tee -a "$LOG_FILE"
+                    ERRORS="${ERRORS}Database dump $database may be invalid. "
+                fi
+            else
+                echo "$(get_timestamp) FAILED: Cannot extract database dump $database" | tee -a "$LOG_FILE"
+                ERRORS="${ERRORS}Database dump $database extraction failed. "
+                ((FAILED_CHECKS++))
+            fi
+            ((TOTAL_CHECKS++))
+        else
+            echo "$(get_timestamp) INFO: Database dump $database not found (may not have been backed up)" | tee -a "$LOG_FILE"
+        fi
+    done <<< "$DATABASES"
+else
+    echo "$(get_timestamp) INFO: No databases found for user $user" | tee -a "$LOG_FILE"
+fi
+
+#----------------------------------------------------------#
+#                Test MyVesta Config                       #
+#----------------------------------------------------------#
+
+echo "$(get_timestamp) ========== Testing MyVesta Config ==========" | tee -a "$LOG_FILE"
+
+VESTA_ARCHIVE_NAME="$user-$archive"
+if borg list "$VESTA_REPO::$VESTA_ARCHIVE_NAME" &>/dev/null; then
+    # Extract config to temp directory
+    TEMP_VESTA_DIR="$TEMP_DIR/vesta"
+    mkdir -p "$TEMP_VESTA_DIR"
+    
+    # Change to temp directory and extract (borg extracts relative to current directory)
+    cd "$TEMP_DIR" || exit 1
+    if borg extract "$VESTA_REPO::$VESTA_ARCHIVE_NAME" >> "$LOG_FILE" 2>&1; then
+        # Check if user.conf exists (it should be in vesta/data/users/USERNAME/user.conf)
+        VESTA_USER_CONF="$TEMP_DIR/usr/local/vesta/data/users/$user/user.conf"
+        if [ -f "$VESTA_USER_CONF" ]; then
+            if [ -r "$VESTA_USER_CONF" ]; then
+                echo "$(get_timestamp) PASSED: MyVesta config files are readable" | tee -a "$LOG_FILE"
+                ((PASSED_CHECKS++))
+            else
+                echo "$(get_timestamp) FAILED: MyVesta config file is not readable" | tee -a "$LOG_FILE"
+                ERRORS="${ERRORS}MyVesta config file not readable. "
+                ((FAILED_CHECKS++))
+            fi
+        else
+            # Try alternative location (if extracted directly)
+            if [ -f "$TEMP_VESTA_DIR/user.conf" ]; then
+                if [ -r "$TEMP_VESTA_DIR/user.conf" ]; then
+                    echo "$(get_timestamp) PASSED: MyVesta config files are readable" | tee -a "$LOG_FILE"
+                    ((PASSED_CHECKS++))
+                else
+                    echo "$(get_timestamp) FAILED: MyVesta config file is not readable" | tee -a "$LOG_FILE"
+                    ERRORS="${ERRORS}MyVesta config file not readable. "
+                    ((FAILED_CHECKS++))
+                fi
+            else
+                echo "$(get_timestamp) WARNING: user.conf not found in Vesta config archive" | tee -a "$LOG_FILE"
+                ERRORS="${ERRORS}user.conf not found in Vesta config. "
+            fi
+        fi
+        ((TOTAL_CHECKS++))
+    else
+        echo "$(get_timestamp) FAILED: Cannot extract MyVesta config archive" | tee -a "$LOG_FILE"
+        ERRORS="${ERRORS}MyVesta config extraction failed. "
+        ((FAILED_CHECKS++))
+        ((TOTAL_CHECKS++))
+    fi
+    cd - > /dev/null || true
+else
+    echo "$(get_timestamp) INFO: MyVesta config archive not found" | tee -a "$LOG_FILE"
+fi
+
+#----------------------------------------------------------#
+#                Checkup Summary                           #
+#----------------------------------------------------------#
+
+echo "" | tee -a "$LOG_FILE"
+echo "$(get_timestamp) ========== RESTORE CHECKUP SUMMARY ==========" | tee -a "$LOG_FILE"
+echo "$(get_timestamp) User: $user" | tee -a "$LOG_FILE"
+echo "$(get_timestamp) Archive: $archive" | tee -a "$LOG_FILE"
+echo "$(get_timestamp) Total Checks: $TOTAL_CHECKS" | tee -a "$LOG_FILE"
+echo "$(get_timestamp) Passed: $PASSED_CHECKS" | tee -a "$LOG_FILE"
+echo "$(get_timestamp) Failed: $FAILED_CHECKS" | tee -a "$LOG_FILE"
+
+if [ $FAILED_CHECKS -eq 0 ]; then
+    echo "$(get_timestamp) Status: ALL CHECKS PASSED - Restore should work correctly" | tee -a "$LOG_FILE"
+    STATUS="PASSED"
+else
+    echo "$(get_timestamp) Status: SOME CHECKS FAILED - Review errors before restoring" | tee -a "$LOG_FILE"
+    STATUS="FAILED"
+    echo "$(get_timestamp) Errors: $ERRORS" | tee -a "$LOG_FILE"
+fi
+
+log_event "OK" "Restore checkup completed for user $user, archive $archive ($PASSED_CHECKS passed, $FAILED_CHECKS failed)"
+
+exit $FAILED_CHECKS

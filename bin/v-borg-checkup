@@ -1,0 +1,164 @@
+#!/bin/bash
+# info: check backup integrity and completeness
+# options: [USER]
+#
+# This command verifies backup integrity and completeness.
+# If USER is specified, checks only that user. Otherwise checks all users.
+
+#----------------------------------------------------------#
+#                Variable & Argument Definition            #
+#----------------------------------------------------------#
+
+# Arguments
+user=$1
+
+# Source shared functions
+if [ -f "/usr/local/vesta/func/borg.sh" ]; then
+    source /usr/local/vesta/func/borg.sh
+else
+    # Try local development path
+    SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null && pwd )"
+    NEW_BORG_DIR="$(dirname "$SCRIPT_DIR")"
+    source "$NEW_BORG_DIR/func/borg.sh"
+fi
+
+# Source myVesta environment
+source /etc/profile.d/vesta.sh 2>/dev/null || source /etc/profile
+
+#----------------------------------------------------------#
+#                    Verifications                         #
+#----------------------------------------------------------#
+
+check_root
+check_borg_installed
+source_borg_config
+ensure_log_dir
+
+#----------------------------------------------------------#
+#                Checkup Execution                         #
+#----------------------------------------------------------#
+
+CHECKUP_DATE=$(get_archive_date)
+LOG_FILE="$LOG_DIR/checkup-$CHECKUP_DATE.log"
+
+echo "$(get_timestamp) Starting backup checkup" | tee "$LOG_FILE"
+
+TOTAL_CHECKS=0
+PASSED_CHECKS=0
+FAILED_CHECKS=0
+ERRORS=""
+
+# Function to check a single user
+check_user_backup() {
+    local check_user="$1"
+    local user_errors=0
+    
+    echo "$(get_timestamp) Checking user: $check_user" | tee -a "$LOG_FILE"
+    
+    local user_repo=$(build_borg_repo_path "user" "$check_user")
+    local db_repo=$(build_borg_repo_path "db" "$check_user")
+    
+    # Check if repositories exist
+    if ! borg list "$user_repo" &>/dev/null; then
+        echo "$(get_timestamp) WARNING: User repository does not exist: $user_repo" | tee -a "$LOG_FILE"
+        ((user_errors++))
+    else
+        # Check integrity
+        echo "$(get_timestamp) Checking integrity of user repository: $user_repo" | tee -a "$LOG_FILE"
+        if borg check "$user_repo" >> "$LOG_FILE" 2>&1; then
+            echo "$(get_timestamp) PASSED: User repository integrity check" | tee -a "$LOG_FILE"
+            ((PASSED_CHECKS++))
+        else
+            echo "$(get_timestamp) FAILED: User repository integrity check failed" | tee -a "$LOG_FILE"
+            ERRORS="${ERRORS}User $check_user: repository integrity failed. "
+            ((FAILED_CHECKS++))
+            ((user_errors++))
+        fi
+        ((TOTAL_CHECKS++))
+        
+        # Check completeness - verify we can list archives
+        local archive_count=$(borg list "$user_repo" 2>/dev/null | wc -l | tr -d ' ')
+        if [ "$archive_count" -gt 0 ]; then
+            echo "$(get_timestamp) PASSED: User repository has $archive_count archives" | tee -a "$LOG_FILE"
+            ((PASSED_CHECKS++))
+        else
+            echo "$(get_timestamp) WARNING: User repository has no archives" | tee -a "$LOG_FILE"
+            ERRORS="${ERRORS}User $check_user: no archives found. "
+        fi
+        ((TOTAL_CHECKS++))
+    fi
+    
+    # Check DB repository
+    if ! borg list "$db_repo" &>/dev/null; then
+        echo "$(get_timestamp) INFO: Database repository does not exist (user may have no databases): $db_repo" | tee -a "$LOG_FILE"
+    else
+        echo "$(get_timestamp) Checking integrity of database repository: $db_repo" | tee -a "$LOG_FILE"
+        if borg check "$db_repo" >> "$LOG_FILE" 2>&1; then
+            echo "$(get_timestamp) PASSED: Database repository integrity check" | tee -a "$LOG_FILE"
+            ((PASSED_CHECKS++))
+        else
+            echo "$(get_timestamp) FAILED: Database repository integrity check failed" | tee -a "$LOG_FILE"
+            ERRORS="${ERRORS}User $check_user: database repository integrity failed. "
+            ((FAILED_CHECKS++))
+            ((user_errors++))
+        fi
+        ((TOTAL_CHECKS++))
+    fi
+    
+    return $user_errors
+}
+
+# Check single user or all users
+if [ -n "$user" ]; then
+    # Check if user exists
+    if ! check_user_exists "$user"; then
+        echo "Error: User '$user' does not exist"
+        exit 1
+    fi
+    
+    check_user_backup "$user"
+    EXIT_CODE=$?
+else
+    # Check all users
+    USERS=$(get_user_list)
+    for check_user in $USERS; do
+        # Skip suspended users
+        if check_user_suspended "$check_user"; then
+            continue
+        fi
+        
+        check_user_backup "$check_user"
+    done
+    
+    EXIT_CODE=$FAILED_CHECKS
+fi
+
+#----------------------------------------------------------#
+#                Checkup Summary                           #
+#----------------------------------------------------------#
+
+echo "" | tee -a "$LOG_FILE"
+echo "$(get_timestamp) ========== CHECKUP SUMMARY ==========" | tee -a "$LOG_FILE"
+echo "$(get_timestamp) Total Checks: $TOTAL_CHECKS" | tee -a "$LOG_FILE"
+echo "$(get_timestamp) Passed: $PASSED_CHECKS" | tee -a "$LOG_FILE"
+echo "$(get_timestamp) Failed: $FAILED_CHECKS" | tee -a "$LOG_FILE"
+
+if [ $FAILED_CHECKS -eq 0 ]; then
+    echo "$(get_timestamp) Status: ALL CHECKS PASSED" | tee -a "$LOG_FILE"
+    STATUS="PASSED"
+else
+    echo "$(get_timestamp) Status: SOME CHECKS FAILED" | tee -a "$LOG_FILE"
+    STATUS="FAILED"
+    echo "$(get_timestamp) Errors: $ERRORS" | tee -a "$LOG_FILE"
+fi
+
+# Send notification if configured
+if [ -n "$NOTIFY_ADMIN_BACKUP" ] && [ "$STATUS" = "FAILED" ]; then
+    SUBJECT="Backup Checkup FAILED: $FAILED_CHECKS errors found"
+    BODY=$(cat "$LOG_FILE")
+    send_notification "$SUBJECT" "$BODY" "$NOTIFY_ADMIN_BACKUP"
+fi
+
+log_event "OK" "Backup checkup completed ($PASSED_CHECKS passed, $FAILED_CHECKS failed)"
+
+exit $EXIT_CODE

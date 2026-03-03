@@ -1,0 +1,142 @@
+#!/bin/bash
+# info: show backup status for a user
+# options: USER [FORMAT]
+#
+# This command shows the current backup status for a specific user.
+
+#----------------------------------------------------------#
+#                Variable & Argument Definition            #
+#----------------------------------------------------------#
+
+# Arguments
+user=$1
+format=${2-shell}
+
+# Source shared functions
+if [ -f "/usr/local/vesta/func/borg.sh" ]; then
+    source /usr/local/vesta/func/borg.sh
+else
+    # Try local development path
+    SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null && pwd )"
+    NEW_BORG_DIR="$(dirname "$SCRIPT_DIR")"
+    source "$NEW_BORG_DIR/func/borg.sh"
+fi
+
+# Source myVesta environment
+source /etc/profile.d/vesta.sh 2>/dev/null || source /etc/profile
+
+#----------------------------------------------------------#
+#                    Verifications                         #
+#----------------------------------------------------------#
+
+check_root
+check_borg_installed
+source_borg_config
+
+# Check arguments
+if [ -z "$user" ]; then
+    echo "Usage: v-borg-status USER [FORMAT]"
+    echo "Error: USER argument is required"
+    exit 1
+fi
+
+# Check if user exists
+if ! check_user_exists "$user"; then
+    echo "Error: User '$user' does not exist"
+    exit 1
+fi
+
+# Load per-user config
+load_user_borg_config "$user" 2>/dev/null
+
+#----------------------------------------------------------#
+#                Gather Status Information                  #
+#----------------------------------------------------------#
+
+USER_REPO=$(build_borg_repo_path "user" "$user")
+DB_REPO=$(build_borg_repo_path "db" "$user")
+VESTA_REPO=$(build_borg_repo_path "vesta" "")
+
+LAST_BACKUP=$(get_last_backup_date "$user")
+BACKUP_COUNT=$(get_backup_count "$user")
+USER_REPO_HEALTH=$(check_repo_health "$USER_REPO")
+DB_REPO_HEALTH=$(check_repo_health "$DB_REPO")
+
+# Get repository sizes
+USER_REPO_SIZE=$(get_repo_size "$USER_REPO")
+DB_REPO_SIZE=$(get_repo_size "$DB_REPO")
+
+# Get disk usage
+DISK_USAGE=$(get_disk_usage "$BACKUP_DIR")
+DISK_TOTAL=$(echo "$DISK_USAGE" | awk '{print $1}')
+DISK_USED=$(echo "$DISK_USAGE" | awk '{print $2}')
+DISK_AVAIL=$(echo "$DISK_USAGE" | awk '{print $3}')
+DISK_PERCENT=$(echo "$DISK_USAGE" | awk '{print $4}')
+
+#----------------------------------------------------------#
+#                Format Output                              #
+#----------------------------------------------------------#
+
+case "$format" in
+    json)
+        echo "{"
+        echo "  \"user\": \"$user\","
+        echo "  \"last_backup\": \"$LAST_BACKUP\","
+        echo "  \"backup_count\": $BACKUP_COUNT,"
+        echo "  \"repository_health\": {"
+        echo "    \"user_repo\": \"$USER_REPO_HEALTH\","
+        echo "    \"db_repo\": \"$DB_REPO_HEALTH\""
+        echo "  },"
+        echo "  \"repository_sizes\": {"
+        echo "    \"user_repo\": $USER_REPO_SIZE,"
+        echo "    \"db_repo\": $DB_REPO_SIZE"
+        echo "  },"
+        echo "  \"disk_usage\": {"
+        echo "    \"total\": $DISK_TOTAL,"
+        echo "    \"used\": $DISK_USED,"
+        echo "    \"available\": $DISK_AVAIL,"
+        echo "    \"percent\": $DISK_PERCENT"
+        echo "  },"
+        echo "  \"config\": {"
+        echo "    \"enabled\": \"$BORG_BACKUP_ENABLED\","
+        echo "    \"web\": \"$BORG_BACKUP_WEB\","
+        echo "    \"mail\": \"$BORG_BACKUP_MAIL\","
+        echo "    \"db\": \"$BORG_BACKUP_DB\""
+        echo "  }"
+        echo "}"
+        ;;
+        
+    plain)
+        echo -e "USER\tLAST_BACKUP\tBACKUP_COUNT\tUSER_REPO_HEALTH\tDB_REPO_HEALTH"
+        echo -e "$user\t$LAST_BACKUP\t$BACKUP_COUNT\t$USER_REPO_HEALTH\t$DB_REPO_HEALTH"
+        ;;
+        
+    shell|*)
+        echo "Backup Status for User: $user"
+        echo "================================"
+        echo "Last Backup:        $LAST_BACKUP"
+        echo "Total Archives:     $BACKUP_COUNT"
+        echo ""
+        echo "Repository Health:"
+        echo "  User Repo:        $USER_REPO_HEALTH"
+        echo "  DB Repo:          $DB_REPO_HEALTH"
+        echo ""
+        echo "Repository Sizes:"
+        echo "  User Repo:        $(format_size $USER_REPO_SIZE)"
+        echo "  DB Repo:          $(format_size $DB_REPO_SIZE)"
+        echo ""
+        echo "Disk Usage:"
+        echo "  Total:            $(format_size $DISK_TOTAL)"
+        echo "  Used:             $(format_size $DISK_USED)"
+        echo "  Available:        $(format_size $DISK_AVAIL)"
+        echo "  Usage:            $DISK_PERCENT%"
+        echo ""
+        echo "Backup Config:"
+        echo "  Enabled:          $BORG_BACKUP_ENABLED"
+        echo "  Web:              $BORG_BACKUP_WEB"
+        echo "  Mail:              $BORG_BACKUP_MAIL"
+        echo "  DB:                $BORG_BACKUP_DB"
+        ;;
+esac
+
+exit 0

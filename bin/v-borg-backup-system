@@ -1,0 +1,190 @@
+#!/bin/bash
+# info: backup system configs with borg incremental
+# options: NONE
+#
+# This command backs up system-level configurations using Borg Backup.
+
+#----------------------------------------------------------#
+#                Variable Definition                       #
+#----------------------------------------------------------#
+
+# Source shared functions
+if [ -f "/usr/local/vesta/func/borg.sh" ]; then
+    source /usr/local/vesta/func/borg.sh
+else
+    # Try local development path
+    SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null && pwd )"
+    NEW_BORG_DIR="$(dirname "$SCRIPT_DIR")"
+    source "$NEW_BORG_DIR/func/borg.sh"
+fi
+
+# Source myVesta environment
+source /etc/profile.d/vesta.sh 2>/dev/null || source /etc/profile
+
+#----------------------------------------------------------#
+#                    Verifications                         #
+#----------------------------------------------------------#
+
+check_root
+check_borg_installed
+source_borg_config
+ensure_log_dir
+
+#----------------------------------------------------------#
+#                    Backup Execution                      #
+#----------------------------------------------------------#
+
+START_TIME=$(date +%s)
+ARCHIVE_DATE=$(get_archive_date)
+LOG_FILE="$LOG_DIR/backup-system-$ARCHIVE_DATE.log"
+
+echo "$(get_timestamp) Starting system backup" | tee "$LOG_FILE"
+echo "$(get_timestamp) Backup mode: $BACKUP_MODE" | tee -a "$LOG_FILE"
+
+# Build repository paths
+REPO_ETC_PATH=$(build_borg_repo_path "etc" "")
+REPO_VESTA_PATH=$(build_borg_repo_path "vesta" "")
+REPO_SCRIPTS_PATH=$(build_borg_repo_path "scripts" "")
+
+# Initialize repositories
+init_repo_if_needed "$REPO_ETC_PATH" >> "$LOG_FILE" 2>&1
+init_repo_if_needed "$REPO_VESTA_PATH" >> "$LOG_FILE" 2>&1
+init_repo_if_needed "$REPO_SCRIPTS_PATH" >> "$LOG_FILE" 2>&1
+
+#----------------------------------------------------------#
+#                Backup /etc Directory                     #
+#----------------------------------------------------------#
+
+echo "$(get_timestamp) ========== BACKING UP /etc ==========" | tee -a "$LOG_FILE"
+
+if [ -d "$ETC_DIR" ]; then
+    ARCHIVE_NAME="$ARCHIVE_DATE"
+    echo "$(get_timestamp) Creating archive: $REPO_ETC_PATH::$ARCHIVE_NAME" | tee -a "$LOG_FILE"
+    
+    borg create \
+        $OPTIONS_CREATE \
+        "$REPO_ETC_PATH::$ARCHIVE_NAME" \
+        "$ETC_DIR" \
+        >> "$LOG_FILE" 2>&1
+    
+    if [ $? -eq 0 ]; then
+        echo "$(get_timestamp) /etc backup completed successfully" | tee -a "$LOG_FILE"
+    else
+        echo "$(get_timestamp) Error: /etc backup failed" | tee -a "$LOG_FILE"
+        BACKUP_FAILED=1
+    fi
+    
+    # Prune old archives
+    echo "$(get_timestamp) Pruning old /etc archives..." | tee -a "$LOG_FILE"
+    borg prune $OPTIONS_PRUNE "$REPO_ETC_PATH" >> "$LOG_FILE" 2>&1
+fi
+
+#----------------------------------------------------------#
+#                Backup myVesta Directory                  #
+#----------------------------------------------------------#
+
+echo "$(get_timestamp) ========== BACKING UP MYVESTA ==========" | tee -a "$LOG_FILE"
+
+if [ -d "$VESTA_DIR" ]; then
+    ARCHIVE_NAME="$ARCHIVE_DATE"
+    echo "$(get_timestamp) Creating archive: $REPO_VESTA_PATH::$ARCHIVE_NAME" | tee -a "$LOG_FILE"
+    
+    borg create \
+        $OPTIONS_CREATE \
+        --exclude '*/cache/*' \
+        --exclude '*/tmp/*' \
+        --exclude '*/log/*' \
+        "$REPO_VESTA_PATH::$ARCHIVE_NAME" \
+        "$VESTA_DIR" \
+        >> "$LOG_FILE" 2>&1
+    
+    if [ $? -eq 0 ]; then
+        echo "$(get_timestamp) myVesta backup completed successfully" | tee -a "$LOG_FILE"
+    else
+        echo "$(get_timestamp) Error: myVesta backup failed" | tee -a "$LOG_FILE"
+        BACKUP_FAILED=1
+    fi
+    
+    # Prune old archives
+    echo "$(get_timestamp) Pruning old myVesta archives..." | tee -a "$LOG_FILE"
+    borg prune $OPTIONS_PRUNE "$REPO_VESTA_PATH" >> "$LOG_FILE" 2>&1
+fi
+
+#----------------------------------------------------------#
+#                Backup Scripts Directory                  #
+#----------------------------------------------------------#
+
+echo "$(get_timestamp) ========== BACKING UP SCRIPTS ==========" | tee -a "$LOG_FILE"
+
+if [ -d "$SCRIPTS_DIR" ]; then
+    ARCHIVE_NAME="$ARCHIVE_DATE"
+    echo "$(get_timestamp) Creating archive: $REPO_SCRIPTS_PATH::$ARCHIVE_NAME" | tee -a "$LOG_FILE"
+    
+    borg create \
+        $OPTIONS_CREATE \
+        "$REPO_SCRIPTS_PATH::$ARCHIVE_NAME" \
+        "$SCRIPTS_DIR" \
+        >> "$LOG_FILE" 2>&1
+    
+    if [ $? -eq 0 ]; then
+        echo "$(get_timestamp) Scripts backup completed successfully" | tee -a "$LOG_FILE"
+    else
+        echo "$(get_timestamp) Error: Scripts backup failed" | tee -a "$LOG_FILE"
+        BACKUP_FAILED=1
+    fi
+    
+    # Prune old archives
+    echo "$(get_timestamp) Pruning old scripts archives..." | tee -a "$LOG_FILE"
+    borg prune $OPTIONS_PRUNE "$REPO_SCRIPTS_PATH" >> "$LOG_FILE" 2>&1
+else
+    echo "$(get_timestamp) Scripts directory does not exist, skipping" | tee -a "$LOG_FILE"
+fi
+
+#----------------------------------------------------------#
+#                Backup Summary                            #
+#----------------------------------------------------------#
+
+END_TIME=$(date +%s)
+RUNTIME=$((END_TIME - START_TIME))
+RUNTIME_MIN=$((RUNTIME / 60))
+
+if [ $RUNTIME_MIN -lt 1 ]; then
+    RUNTIME_MIN=1
+fi
+
+echo "$(get_timestamp) ========== BACKUP SUMMARY ==========" | tee -a "$LOG_FILE"
+echo "$(get_timestamp) Archive date: $ARCHIVE_DATE" | tee -a "$LOG_FILE"
+echo "$(get_timestamp) Runtime: $RUNTIME_MIN minute(s)" | tee -a "$LOG_FILE"
+
+if [ -n "$BACKUP_FAILED" ]; then
+    echo "$(get_timestamp) Status: FAILED (see log for details)" | tee -a "$LOG_FILE"
+    BACKUP_STATUS="FAILED"
+else
+    echo "$(get_timestamp) Status: SUCCESS" | tee -a "$LOG_FILE"
+    BACKUP_STATUS="SUCCESS"
+fi
+
+#----------------------------------------------------------#
+#                Notifications                             #
+#----------------------------------------------------------#
+
+if [ -n "$NOTIFY_ADMIN_BACKUP" ] && [ "$BACKUP_STATUS" = "FAILED" ]; then
+    SUBJECT="System Backup $BACKUP_STATUS"
+    BODY=$(cat "$LOG_FILE")
+    send_notification "$SUBJECT" "$BODY" "$NOTIFY_ADMIN_BACKUP"
+fi
+
+#----------------------------------------------------------#
+#                Logging                                   #
+#----------------------------------------------------------#
+
+log_event "OK" "System backup completed (status: $BACKUP_STATUS)"
+
+# Exit with appropriate code
+if [ -n "$BACKUP_FAILED" ]; then
+    exit 1
+fi
+
+exit 0
+
+

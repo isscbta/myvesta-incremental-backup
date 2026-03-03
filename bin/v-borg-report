@@ -1,0 +1,201 @@
+#!/bin/bash
+# info: generate backup report for a user
+# options: USER [FORMAT]
+#
+# This command generates a detailed backup report for a specific user.
+# Designed for email notifications and CRON jobs.
+
+#----------------------------------------------------------#
+#                Variable & Argument Definition            #
+#----------------------------------------------------------#
+
+# Arguments
+user=$1
+format=${2-shell}
+
+# Source shared functions
+if [ -f "/usr/local/vesta/func/borg.sh" ]; then
+    source /usr/local/vesta/func/borg.sh
+else
+    # Try local development path
+    SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null && pwd )"
+    NEW_BORG_DIR="$(dirname "$SCRIPT_DIR")"
+    source "$NEW_BORG_DIR/func/borg.sh"
+fi
+
+# Source myVesta environment
+source /etc/profile.d/vesta.sh 2>/dev/null || source /etc/profile
+
+#----------------------------------------------------------#
+#                    Verifications                         #
+#----------------------------------------------------------#
+
+check_root
+check_borg_installed
+source_borg_config
+
+# Check arguments
+if [ -z "$user" ]; then
+    echo "Usage: v-borg-report USER [FORMAT]"
+    echo "Error: USER argument is required"
+    exit 1
+fi
+
+# Check if user exists
+if ! check_user_exists "$user"; then
+    echo "Error: User '$user' does not exist"
+    exit 1
+fi
+
+# Load per-user config
+load_user_borg_config "$user" 2>/dev/null
+
+#----------------------------------------------------------#
+#                Gather Report Data                        #
+#----------------------------------------------------------#
+
+USER_REPO=$(build_borg_repo_path "user" "$user")
+DB_REPO=$(build_borg_repo_path "db" "$user")
+
+LAST_BACKUP=$(get_last_backup_date "$user")
+BACKUP_COUNT=$(get_backup_count "$user")
+USER_REPO_SIZE=$(get_repo_size "$USER_REPO")
+DB_REPO_SIZE=$(get_repo_size "$DB_REPO")
+
+# Get recent backups (last 7 days)
+RECENT_BACKUPS=""
+if borg list "$USER_REPO" &>/dev/null; then
+    RECENT_BACKUPS=$(borg list "$USER_REPO" 2>/dev/null | tail -n 7)
+fi
+
+# Calculate days since last backup
+DAYS_SINCE_BACKUP="N/A"
+if [ "$LAST_BACKUP" != "never" ]; then
+    LAST_BACKUP_EPOCH=$(date -d "$LAST_BACKUP" +%s 2>/dev/null || echo "0")
+    if [ "$LAST_BACKUP_EPOCH" != "0" ]; then
+        CURRENT_EPOCH=$(date +%s)
+        DAYS_SINCE_BACKUP=$(( (CURRENT_EPOCH - LAST_BACKUP_EPOCH) / 86400 ))
+    fi
+fi
+
+# Get disk usage
+DISK_USAGE=$(get_disk_usage "$BACKUP_DIR")
+DISK_PERCENT=$(echo "$DISK_USAGE" | awk '{print $4}')
+DISK_WARNING=$(check_disk_space_warning "$BACKUP_DIR")
+
+# Warnings
+WARNINGS=""
+if [ "$LAST_BACKUP" = "never" ]; then
+    WARNINGS="${WARNINGS}No backups found for this user. "
+elif [ "$DAYS_SINCE_BACKUP" != "N/A" ] && [ "$DAYS_SINCE_BACKUP" -gt 7 ]; then
+    WARNINGS="${WARNINGS}Last backup was $DAYS_SINCE_BACKUP days ago. "
+fi
+
+if [ "$DISK_WARNING" = "critical" ]; then
+    WARNINGS="${WARNINGS}CRITICAL: Disk space usage is ${DISK_PERCENT}%. "
+elif [ "$DISK_WARNING" = "warning" ]; then
+    WARNINGS="${WARNINGS}WARNING: Disk space usage is ${DISK_PERCENT}%. "
+fi
+
+if [ -z "$WARNINGS" ]; then
+    WARNINGS="None"
+fi
+
+#----------------------------------------------------------#
+#                Generate Report                           #
+#----------------------------------------------------------#
+
+REPORT_DATE=$(date '+%Y-%m-%d')
+REPORT_TIME=$(date '+%H:%M:%S')
+
+case "$format" in
+    email)
+        cat <<EOF
+Borg Backup Report for User: $user
+Date: $REPORT_DATE $REPORT_TIME
+
+=== Backup Status ===
+Last Backup: $LAST_BACKUP
+Total Archives: $BACKUP_COUNT
+Days Since Last Backup: $DAYS_SINCE_BACKUP
+
+=== Storage Usage ===
+User Repository: $(format_size $USER_REPO_SIZE)
+Database Repository: $(format_size $DB_REPO_SIZE)
+Total Backup Size: $(format_size $((USER_REPO_SIZE + DB_REPO_SIZE)))
+
+=== Recent Backups (Last 7 Days) ===
+$RECENT_BACKUPS
+
+=== Warnings ===
+$WARNINGS
+
+=== Backup Configuration ===
+Enabled: $BORG_BACKUP_ENABLED
+Web Domains: $BORG_BACKUP_WEB
+Mail Domains: $BORG_BACKUP_MAIL
+Databases: $BORG_BACKUP_DB
+
+---
+This is an automated report from the Borg Incremental Backup System.
+EOF
+        ;;
+        
+    json)
+        echo "{"
+        echo "  \"user\": \"$user\","
+        echo "  \"report_date\": \"$REPORT_DATE\","
+        echo "  \"report_time\": \"$REPORT_TIME\","
+        echo "  \"last_backup\": \"$LAST_BACKUP\","
+        echo "  \"backup_count\": $BACKUP_COUNT,"
+        echo "  \"days_since_backup\": \"$DAYS_SINCE_BACKUP\","
+        echo "  \"storage\": {"
+        echo "    \"user_repo_size\": $USER_REPO_SIZE,"
+        echo "    \"db_repo_size\": $DB_REPO_SIZE,"
+        echo "    \"total_size\": $((USER_REPO_SIZE + DB_REPO_SIZE))"
+        echo "  },"
+        echo "  \"warnings\": \"$WARNINGS\","
+        echo "  \"config\": {"
+        echo "    \"enabled\": \"$BORG_BACKUP_ENABLED\","
+        echo "    \"web\": \"$BORG_BACKUP_WEB\","
+        echo "    \"mail\": \"$BORG_BACKUP_MAIL\","
+        echo "    \"db\": \"$BORG_BACKUP_DB\""
+        echo "  }"
+        echo "}"
+        ;;
+        
+    shell|*)
+        echo "========================================"
+        echo "Borg Backup Report for User: $user"
+        echo "Date: $REPORT_DATE $REPORT_TIME"
+        echo "========================================"
+        echo ""
+        echo "=== Backup Status ==="
+        echo "Last Backup:        $LAST_BACKUP"
+        echo "Total Archives:     $BACKUP_COUNT"
+        echo "Days Since Backup:  $DAYS_SINCE_BACKUP"
+        echo ""
+        echo "=== Storage Usage ==="
+        echo "User Repository:    $(format_size $USER_REPO_SIZE)"
+        echo "Database Repository: $(format_size $DB_REPO_SIZE)"
+        echo "Total Backup Size:  $(format_size $((USER_REPO_SIZE + DB_REPO_SIZE)))"
+        echo ""
+        echo "=== Recent Backups (Last 7 Days) ==="
+        if [ -n "$RECENT_BACKUPS" ]; then
+            echo "$RECENT_BACKUPS"
+        else
+            echo "No recent backups found"
+        fi
+        echo ""
+        echo "=== Warnings ==="
+        echo "$WARNINGS"
+        echo ""
+        echo "=== Backup Configuration ==="
+        echo "Enabled:            $BORG_BACKUP_ENABLED"
+        echo "Web Domains:        $BORG_BACKUP_WEB"
+        echo "Mail Domains:       $BORG_BACKUP_MAIL"
+        echo "Databases:          $BORG_BACKUP_DB"
+        ;;
+esac
+
+exit 0

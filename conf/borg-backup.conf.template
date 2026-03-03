@@ -1,0 +1,49 @@
+#----------------------------------------------------------#
+#         Per-User Borg Incremental Backup Config          #
+#----------------------------------------------------------#
+# This file controls what gets backed up for this specific user.
+# Location: /usr/local/vesta/data/users/USERNAME/borg-backup.conf
+#
+# Format: myVesta-style single-line config (bash variables)
+#----------------------------------------------------------#
+
+# Enable/disable incremental backups for this user
+# yes = user will be included in backups
+# no  = user will be skipped (even if listed in v-borg-backup-users)
+BORG_BACKUP_ENABLED='yes'
+
+# Web domains to backup
+# *     = backup all web domains for this user
+# none  = skip web backup entirely
+# list  = comma-separated domain names (e.g., 'domain1.com,domain2.com')
+BORG_BACKUP_WEB='*'
+
+# Mail domains to backup
+# *     = backup all mail domains for this user
+# none  = skip mail backup entirely
+# list  = comma-separated domain names
+BORG_BACKUP_MAIL='*'
+
+# Databases to backup
+# *     = backup all databases for this user
+# none  = skip database backup entirely
+# list  = comma-separated database names (e.g., 'db1,db2')
+BORG_BACKUP_DB='*'
+
+# User directories to backup (relative to /home/USER/)
+# home  = backup entire /home/USER/ directory
+# list  = comma-separated directory names (future: 'home,logs,custom')
+BORG_BACKUP_USER_DIRS='home'
+
+# Per-user exclusion file (optional)
+# If set, this file will be read from /usr/local/vesta/data/users/USERNAME/
+# Format: same as traditional backup-excludes.conf (WEB=, MAIL=, DB=, USER=)
+# Leave empty to use only global exclusions from borg.conf
+BORG_BACKUP_EXCLUDES_FILE='incremental-backup-excludes.conf'
+
+# Retention override (optional - uses global settings if not set)
+# These override the global KEEP_* settings from /usr/local/vesta/conf/borg.conf
+# Leave empty to use global retention policy
+# BORG_BACKUP_KEEP_DAILY=7
+# BORG_BACKUP_KEEP_WEEKLY=4
+# BORG_BACKUP_KEEP_MONTHLY=6

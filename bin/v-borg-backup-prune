@@ -1,0 +1,192 @@
+#!/bin/bash
+# info: delete all backups for a user (prune user backups)
+# options: USER
+#
+# This command deletes ALL backup archives and repositories for a user.
+# Use with caution - this permanently removes all backups for the user.
+
+#----------------------------------------------------------#
+#                Variable Definition                       #
+#----------------------------------------------------------#
+
+# Arguments
+user=$1
+
+# Source shared functions
+if [ -f "/usr/local/vesta/func/borg.sh" ]; then
+    source /usr/local/vesta/func/borg.sh
+else
+    # Try local development path
+    SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null && pwd )"
+    NEW_BORG_DIR="$(dirname "$SCRIPT_DIR")"
+    source "$NEW_BORG_DIR/func/borg.sh"
+fi
+
+# Source myVesta environment
+source /etc/profile.d/vesta.sh 2>/dev/null || source /etc/profile
+
+#----------------------------------------------------------#
+#                    Verifications                         #
+#----------------------------------------------------------#
+
+check_root
+check_borg_installed
+source_borg_config
+
+# Check arguments
+if [ -z "$user" ]; then
+    echo "Usage: v-borg-backup-prune USER"
+    echo ""
+    echo "Arguments:"
+    echo "  USER    - Username"
+    echo ""
+    echo "This will permanently delete ALL backups for the user:"
+    echo "  - All user home archives"
+    echo "  - All database archives"
+    echo "  - All MyVesta config archives"
+    echo "  - Entire repositories will be removed"
+    echo ""
+    echo "Example:"
+    echo "  v-borg-backup-prune admin"
+    echo ""
+    echo "WARNING: This action cannot be undone!"
+    exit 1
+fi
+
+# Check if user exists (optional - maybe user was already deleted)
+if ! check_user_exists "$user" 2>/dev/null; then
+    echo "Warning: User '$user' does not exist in myVesta"
+    echo "Continuing with backup cleanup..."
+fi
+
+# Build repository paths
+USER_REPO=$(build_borg_repo_path "user" "$user")
+DB_REPO=$(build_borg_repo_path "db" "$user")
+VESTA_REPO=$(build_borg_repo_path "vesta" "")  # Shared repo, no user identifier
+
+# Check if any repositories exist
+REPOS_EXIST=0
+if borg list "$USER_REPO" &>/dev/null 2>&1; then
+    REPOS_EXIST=1
+fi
+if borg list "$DB_REPO" &>/dev/null 2>&1; then
+    REPOS_EXIST=1
+fi
+if borg list "$VESTA_REPO" &>/dev/null 2>&1; then
+    # Check if user has any vesta archives
+    VESTA_ARCHIVES=$(borg list "$VESTA_REPO" 2>/dev/null | grep "^${user}-" | wc -l)
+    if [ "$VESTA_ARCHIVES" -gt 0 ]; then
+        REPOS_EXIST=1
+    fi
+fi
+
+if [ "$REPOS_EXIST" -eq 0 ]; then
+    echo "No backups found for user '$user'"
+    exit 0
+fi
+
+#----------------------------------------------------------#
+#                Confirmation                              #
+#----------------------------------------------------------#
+
+echo "=========================================="
+echo "WARNING: This will permanently delete ALL backups for user: $user"
+echo "=========================================="
+echo ""
+echo "This will delete:"
+echo "  - All archives in: $USER_REPO"
+echo "  - All archives in: $DB_REPO"
+echo "  - All MyVesta config archives for this user in: $VESTA_REPO"
+echo ""
+echo "This action CANNOT be undone!"
+echo ""
+read -p "Are you absolutely sure you want to delete ALL backups for '$user'? [yes/N]: " -r
+echo
+
+if [ "$REPLY" != "yes" ]; then
+    echo "Prune cancelled"
+    exit 0
+fi
+
+#----------------------------------------------------------#
+#                Delete Repositories                       #
+#----------------------------------------------------------#
+
+echo "$(get_timestamp) Starting backup prune for user: $user"
+
+# Delete user home repository
+if borg list "$USER_REPO" &>/dev/null 2>&1; then
+    echo "$(get_timestamp) Deleting user home repository: $USER_REPO"
+    borg delete "$USER_REPO" 2>&1
+    
+    if [ $? -eq 0 ]; then
+        echo "$(get_timestamp) User home repository deleted successfully"
+        # Remove empty directory
+        rmdir "$USER_REPO" 2>/dev/null || true
+    else
+        echo "$(get_timestamp) Error: Failed to delete user home repository"
+        PRUNE_FAILED=1
+    fi
+else
+    echo "$(get_timestamp) User home repository does not exist, skipping"
+fi
+
+# Delete database repository
+if borg list "$DB_REPO" &>/dev/null 2>&1; then
+    echo "$(get_timestamp) Deleting database repository: $DB_REPO"
+    borg delete "$DB_REPO" 2>&1
+    
+    if [ $? -eq 0 ]; then
+        echo "$(get_timestamp) Database repository deleted successfully"
+        # Remove empty directory
+        rmdir "$DB_REPO" 2>/dev/null || true
+    else
+        echo "$(get_timestamp) Error: Failed to delete database repository"
+        PRUNE_FAILED=1
+    fi
+else
+    echo "$(get_timestamp) Database repository does not exist, skipping"
+fi
+
+# Delete MyVesta config archives (from shared repo)
+if borg list "$VESTA_REPO" &>/dev/null 2>&1; then
+    VESTA_ARCHIVES=$(borg list "$VESTA_REPO" 2>/dev/null | grep "^${user}-" | awk '{print $1}')
+    
+    if [ -n "$VESTA_ARCHIVES" ]; then
+        echo "$(get_timestamp) Deleting MyVesta config archives for user: $user"
+        
+        while IFS= read -r archive; do
+            if [ -z "$archive" ]; then
+                continue
+            fi
+            
+            echo "$(get_timestamp) Deleting archive: $archive"
+            borg delete "$VESTA_REPO::$archive" 2>&1
+            
+            if [ $? -eq 0 ]; then
+                echo "$(get_timestamp) Archive deleted successfully: $archive"
+            else
+                echo "$(get_timestamp) Warning: Failed to delete archive $archive"
+            fi
+        done <<< "$VESTA_ARCHIVES"
+    else
+        echo "$(get_timestamp) No MyVesta config archives found for user: $user"
+    fi
+else
+    echo "$(get_timestamp) MyVesta config repository does not exist, skipping"
+fi
+
+#----------------------------------------------------------#
+#                Summary                                   #
+#----------------------------------------------------------#
+
+if [ -n "$PRUNE_FAILED" ]; then
+    echo "$(get_timestamp) Prune completed with errors"
+    log_event "WARNING" "Backup prune for $user completed with errors"
+    exit 1
+else
+    echo "$(get_timestamp) Prune completed successfully"
+    echo "$(get_timestamp) All backups for user '$user' have been deleted"
+    log_event "OK" "All backups pruned for user: $user"
+    exit 0
+fi

@@ -1,0 +1,238 @@
+#!/bin/bash
+# info: generate global backup system report for admin
+# options: [FORMAT]
+#
+# This command generates a comprehensive backup system report including
+# disk space, backup statistics, and system health.
+
+#----------------------------------------------------------#
+#                Variable & Argument Definition            #
+#----------------------------------------------------------#
+
+# Arguments
+format=${1-shell}
+
+# Source shared functions
+if [ -f "/usr/local/vesta/func/borg.sh" ]; then
+    source /usr/local/vesta/func/borg.sh
+else
+    # Try local development path
+    SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null && pwd )"
+    NEW_BORG_DIR="$(dirname "$SCRIPT_DIR")"
+    source "$NEW_BORG_DIR/func/borg.sh"
+fi
+
+# Source myVesta environment
+source /etc/profile.d/vesta.sh 2>/dev/null || source /etc/profile
+
+#----------------------------------------------------------#
+#                    Verifications                         #
+#----------------------------------------------------------#
+
+check_root
+check_borg_installed
+source_borg_config
+
+#----------------------------------------------------------#
+#                Gather System Data                         #
+#----------------------------------------------------------#
+
+REPORT_DATE=$(date '+%Y-%m-%d')
+REPORT_TIME=$(date '+%H:%M:%S')
+HOSTNAME=$(hostname)
+
+# Disk Space Information
+DISK_USAGE=$(get_disk_usage "$BACKUP_DIR")
+DISK_TOTAL=$(echo "$DISK_USAGE" | awk '{print $1}')
+DISK_USED=$(echo "$DISK_USAGE" | awk '{print $2}')
+DISK_AVAIL=$(echo "$DISK_USAGE" | awk '{print $3}')
+DISK_PERCENT=$(echo "$DISK_USAGE" | awk '{print $4}')
+DISK_WARNING=$(check_disk_space_warning "$BACKUP_DIR")
+
+# Per-repository sizes
+REPO_HOME_SIZE=$(du -sb "$REPO_USERS_DIR" 2>/dev/null | awk '{print $1}' || echo "0")
+REPO_DB_SIZE=$(du -sb "$REPO_DB_DIR" 2>/dev/null | awk '{print $1}' || echo "0")
+REPO_VESTA_SIZE=$(du -sb "$REPO_VESTA_DIR" 2>/dev/null | awk '{print $1}' || echo "0")
+REPO_ETC_SIZE=$(du -sb "$REPO_ETC" 2>/dev/null | awk '{print $1}' || echo "0")
+REPO_SCRIPTS_SIZE=$(du -sb "$REPO_SCRIPTS" 2>/dev/null | awk '{print $1}' || echo "0")
+
+# Backup Statistics
+TOTAL_USERS=0
+USERS_WITH_BACKUPS=0
+TOTAL_ARCHIVES=0
+FAILED_REPOS=0
+
+USERS=$(get_user_list)
+for user in $USERS; do
+    if check_user_suspended "$user"; then
+        continue
+    fi
+    ((TOTAL_USERS++))
+    
+    USER_REPO=$(build_borg_repo_path "user" "$user")
+    if borg list "$USER_REPO" &>/dev/null; then
+        ((USERS_WITH_BACKUPS++))
+        USER_ARCHIVES=$(borg list "$USER_REPO" 2>/dev/null | wc -l)
+        TOTAL_ARCHIVES=$((TOTAL_ARCHIVES + USER_ARCHIVES))
+        
+        # Check repo health
+        if [ "$(check_repo_health "$USER_REPO")" != "ok" ]; then
+            ((FAILED_REPOS++))
+        fi
+    fi
+done
+
+# Calculate success rate
+if [ $TOTAL_USERS -gt 0 ]; then
+    SUCCESS_RATE=$(( (USERS_WITH_BACKUPS * 100) / TOTAL_USERS ))
+else
+    SUCCESS_RATE=0
+fi
+
+# Recent errors from log
+RECENT_ERRORS=""
+if [ -f "$LOG_DIR/borg.log" ]; then
+    RECENT_ERRORS=$(grep -i "error\|failed\|fail" "$LOG_DIR/borg.log" | tail -n 10 || echo "None")
+fi
+
+#----------------------------------------------------------#
+#                Generate Report                           #
+#----------------------------------------------------------#
+
+case "$format" in
+    email)
+        cat <<EOF
+Borg Backup System Report
+Date: $REPORT_DATE $REPORT_TIME
+Server: $HOSTNAME
+
+=== Disk Space ===
+Backup Directory: $BACKUP_DIR
+Total: $(format_size $DISK_TOTAL)
+Used: $(format_size $DISK_USED)
+Available: $(format_size $DISK_AVAIL)
+Usage: $DISK_PERCENT%
+Status: $DISK_WARNING
+
+Per-Repository Breakdown:
+  Home Repositories:  $(format_size $REPO_HOME_SIZE)
+  Database Repos:     $(format_size $REPO_DB_SIZE)
+  Vesta Config:       $(format_size $REPO_VESTA_SIZE)
+  System (/etc):      $(format_size $REPO_ETC_SIZE)
+  Scripts:            $(format_size $REPO_SCRIPTS_SIZE)
+
+=== Backup Statistics ===
+Total Users: $TOTAL_USERS
+Users with Backups: $USERS_WITH_BACKUPS
+Total Archives: $TOTAL_ARCHIVES
+Failed Repositories: $FAILED_REPOS
+Success Rate: $SUCCESS_RATE%
+
+=== System Health ===
+Repository Status: $([ $FAILED_REPOS -eq 0 ] && echo "OK" || echo "WARNING: $FAILED_REPOS failed repositories")
+
+Recent Errors/Warnings:
+$RECENT_ERRORS
+
+=== Retention Policy ===
+Keep Within: $KEEP_WITHIN
+Keep Daily: $KEEP_DAILY days
+Keep Weekly: $KEEP_WEEKLY weeks
+Keep Monthly: $KEEP_MONTHLY months
+Keep Yearly: $KEEP_YEARLY years
+
+---
+This is an automated report from the Borg Incremental Backup System.
+EOF
+        ;;
+        
+    json)
+        echo "{"
+        echo "  \"report_date\": \"$REPORT_DATE\","
+        echo "  \"report_time\": \"$REPORT_TIME\","
+        echo "  \"hostname\": \"$HOSTNAME\","
+        echo "  \"disk_space\": {"
+        echo "    \"path\": \"$BACKUP_DIR\","
+        echo "    \"total\": $DISK_TOTAL,"
+        echo "    \"used\": $DISK_USED,"
+        echo "    \"available\": $DISK_AVAIL,"
+        echo "    \"percent\": $DISK_PERCENT,"
+        echo "    \"status\": \"$DISK_WARNING\""
+        echo "  },"
+        echo "  \"repositories\": {"
+        echo "    \"home\": $REPO_HOME_SIZE,"
+        echo "    \"db\": $REPO_DB_SIZE,"
+        echo "    \"vesta\": $REPO_VESTA_SIZE,"
+        echo "    \"etc\": $REPO_ETC_SIZE,"
+        echo "    \"scripts\": $REPO_SCRIPTS_SIZE"
+        echo "  },"
+        echo "  \"statistics\": {"
+        echo "    \"total_users\": $TOTAL_USERS,"
+        echo "    \"users_with_backups\": $USERS_WITH_BACKUPS,"
+        echo "    \"total_archives\": $TOTAL_ARCHIVES,"
+        echo "    \"failed_repos\": $FAILED_REPOS,"
+        echo "    \"success_rate\": $SUCCESS_RATE"
+        echo "  },"
+        echo "  \"retention\": {"
+        echo "    \"keep_within\": \"$KEEP_WITHIN\","
+        echo "    \"keep_daily\": $KEEP_DAILY,"
+        echo "    \"keep_weekly\": $KEEP_WEEKLY,"
+        echo "    \"keep_monthly\": $KEEP_MONTHLY,"
+        echo "    \"keep_yearly\": $KEEP_YEARLY"
+        echo "  }"
+        echo "}"
+        ;;
+        
+    shell|*)
+        echo "========================================"
+        echo "Borg Backup System Report"
+        echo "Date: $REPORT_DATE $REPORT_TIME"
+        echo "Server: $HOSTNAME"
+        echo "========================================"
+        echo ""
+        echo "=== Disk Space ==="
+        echo "Backup Directory: $BACKUP_DIR"
+        echo "Total:            $(format_size $DISK_TOTAL)"
+        echo "Used:             $(format_size $DISK_USED)"
+        echo "Available:        $(format_size $DISK_AVAIL)"
+        echo "Usage:            $DISK_PERCENT%"
+        echo "Status:           $DISK_WARNING"
+        echo ""
+        echo "Per-Repository Breakdown:"
+        echo "  Home Repositories:  $(format_size $REPO_HOME_SIZE)"
+        echo "  Database Repos:     $(format_size $REPO_DB_SIZE)"
+        echo "  Vesta Config:       $(format_size $REPO_VESTA_SIZE)"
+        echo "  System (/etc):       $(format_size $REPO_ETC_SIZE)"
+        echo "  Scripts:             $(format_size $REPO_SCRIPTS_SIZE)"
+        echo ""
+        echo "=== Backup Statistics ==="
+        echo "Total Users:          $TOTAL_USERS"
+        echo "Users with Backups:   $USERS_WITH_BACKUPS"
+        echo "Total Archives:       $TOTAL_ARCHIVES"
+        echo "Failed Repositories:  $FAILED_REPOS"
+        echo "Success Rate:         $SUCCESS_RATE%"
+        echo ""
+        echo "=== System Health ==="
+        if [ $FAILED_REPOS -eq 0 ]; then
+            echo "Repository Status:    OK"
+        else
+            echo "Repository Status:    WARNING: $FAILED_REPOS failed repositories"
+        fi
+        echo ""
+        echo "Recent Errors/Warnings:"
+        if [ -n "$RECENT_ERRORS" ] && [ "$RECENT_ERRORS" != "None" ]; then
+            echo "$RECENT_ERRORS"
+        else
+            echo "None"
+        fi
+        echo ""
+        echo "=== Retention Policy ==="
+        echo "Keep Within:  $KEEP_WITHIN"
+        echo "Keep Daily:   $KEEP_DAILY days"
+        echo "Keep Weekly:  $KEEP_WEEKLY weeks"
+        echo "Keep Monthly: $KEEP_MONTHLY months"
+        echo "Keep Yearly:  $KEEP_YEARLY years"
+        ;;
+esac
+
+exit 0
