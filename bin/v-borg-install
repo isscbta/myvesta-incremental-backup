@@ -63,6 +63,7 @@ SCRIPTS=(
     "v-borg-checkup"
     "v-borg-restore-checkup"
     "v-borg-backup-prune"
+    "v-borg-update"
 )
 
 #----------------------------------------------------------#

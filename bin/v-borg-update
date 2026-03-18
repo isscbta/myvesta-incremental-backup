@@ -1,0 +1,153 @@
+#!/bin/bash
+# info: update borg backup system to latest version
+# options: [--config]
+#
+# Updates Borg backup scripts and function library from GitHub.
+# Preserves your borg.conf by default. Use --config to also update config (backup created first).
+#
+# Usage: v-borg-update [--config]
+
+#----------------------------------------------------------#
+#                Color Definitions                         #
+#----------------------------------------------------------#
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+#----------------------------------------------------------#
+#                Helper Functions                          #
+#----------------------------------------------------------#
+
+print_success() {
+    echo -e "${GREEN}✓${NC} $1"
+}
+
+print_error() {
+    echo -e "${RED}✗${NC} $1"
+}
+
+print_info() {
+    echo -e "${YELLOW}→${NC} $1"
+}
+
+print_header() {
+    echo ""
+    echo "=========================================="
+    echo "$1"
+    echo "=========================================="
+    echo ""
+}
+
+#----------------------------------------------------------#
+#                Configuration                             #
+#----------------------------------------------------------#
+
+GITHUB_RAW_URL="https://raw.githubusercontent.com/isscbta/myvesta-incremental-backup/main"
+CONF_URL="${GITHUB_RAW_URL}/conf/borg.conf"
+FUNC_URL="${GITHUB_RAW_URL}/func/borg.sh"
+
+SCRIPTS=(
+    "v-borg-backup-system"
+    "v-borg-backup-user"
+    "v-borg-backup-users"
+    "v-borg-delete-backup"
+    "v-borg-list-backups"
+    "v-borg-restore-user"
+    "v-borg-status"
+    "v-borg-report"
+    "v-borg-report-global"
+    "v-borg-checkup"
+    "v-borg-restore-checkup"
+    "v-borg-backup-prune"
+    "v-borg-update"
+)
+
+#----------------------------------------------------------#
+#                Verifications                             #
+#----------------------------------------------------------#
+
+if [ "$(id -u)" != "0" ]; then
+    print_error "This script must be run as root"
+    exit 1
+fi
+
+if [ ! -d "/usr/local/vesta" ]; then
+    print_error "myVesta is not installed. Run v-borg-install first."
+    exit 1
+fi
+
+if [ ! -f "/usr/local/vesta/func/borg.sh" ]; then
+    print_error "Borg backup is not installed. Run v-borg-install first."
+    exit 1
+fi
+
+UPDATE_CONFIG="no"
+for arg in "$@"; do
+    if [ "$arg" = "--config" ] || [ "$arg" = "-c" ]; then
+        UPDATE_CONFIG="yes"
+        break
+    fi
+done
+
+#----------------------------------------------------------#
+#                Update                                    #
+#----------------------------------------------------------#
+
+print_header "myVesta Borg Backup - Update"
+
+print_info "Downloading from: $GITHUB_RAW_URL"
+echo ""
+
+# Function library
+print_info "Updating func/borg.sh..."
+if wget -q -O /usr/local/vesta/func/borg.sh "$FUNC_URL" 2>/dev/null; then
+    chmod 644 /usr/local/vesta/func/borg.sh
+    print_success "func/borg.sh updated"
+else
+    print_error "Failed to download borg.sh"
+    exit 1
+fi
+
+# Bin scripts
+print_header "Updating Scripts"
+
+for script in "${SCRIPTS[@]}"; do
+    SCRIPT_URL="${GITHUB_RAW_URL}/bin/${script}"
+    print_info "Updating ${script}..."
+    
+    if wget -q -O "/usr/local/vesta/bin/$script" "$SCRIPT_URL" 2>/dev/null; then
+        chmod 755 "/usr/local/vesta/bin/$script"
+        print_success "  $script"
+    else
+        print_error "  Failed: $script"
+    fi
+done
+
+# Config (optional)
+if [ "$UPDATE_CONFIG" = "yes" ]; then
+    print_header "Updating Configuration"
+    if [ -f "/usr/local/vesta/conf/borg.conf" ]; then
+        BACKUP_FILE="/usr/local/vesta/conf/borg.conf.bak.$(date +%Y%m%d_%H%M%S)"
+        cp /usr/local/vesta/conf/borg.conf "$BACKUP_FILE"
+        print_success "Backup created: $BACKUP_FILE"
+    fi
+    if wget -q -O /usr/local/vesta/conf/borg.conf "$CONF_URL" 2>/dev/null; then
+        chmod 600 /usr/local/vesta/conf/borg.conf
+        chown root:root /usr/local/vesta/conf/borg.conf
+        print_success "borg.conf updated (restore from backup if needed)"
+    else
+        print_error "Failed to download borg.conf"
+    fi
+else
+    print_info "Config preserved (use --config to update borg.conf)"
+fi
+
+#----------------------------------------------------------#
+#                Done                                      #
+#----------------------------------------------------------#
+
+print_header "Update Complete!"
+print_success "Scripts and function library updated."
+echo ""
