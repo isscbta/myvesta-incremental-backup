@@ -313,10 +313,18 @@ echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "3. SETUP AUTOMATED BACKUPS (Optional)"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "   # Add to cron (daily at 4 AM):"
-echo "   cat > /etc/cron.d/vesta-borg-backup << 'CRON'"
-echo "   0 4 * * * root /usr/local/vesta/bin/v-borg-backup-users > /var/log/borg/backup_\$(date +\\%F).log 2>&1"
-echo "   CRON"
+echo ""
+read -p "Add daily backup to cron (4 AM)? [y/N]: " -n 1 -r ADD_CRON
+echo ""
+if [[ "$ADD_CRON" =~ ^[Yy]$ ]]; then
+    CRON_LINE='0 4 * * * /usr/local/vesta/bin/v-borg-backup-users > /var/log/borg/backup_$(date +\%F).log 2>&1'
+    (crontab -l 2>/dev/null | grep -v v-borg-backup-users; echo "$CRON_LINE") | crontab -
+    print_success "Cron job added (daily at 4 AM)"
+else
+    echo "   # Add manually via: crontab -e"
+    echo "   # Then paste:"
+    echo '   0 4 * * * /usr/local/vesta/bin/v-borg-backup-users > /var/log/borg/backup_$(date +\%F).log 2>&1'
+fi
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "📁 Important Paths:"
