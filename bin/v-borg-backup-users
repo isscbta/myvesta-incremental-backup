@@ -143,9 +143,41 @@ fi
 #----------------------------------------------------------#
 
 if [ -n "$NOTIFY_ADMIN_BACKUP" ]; then
-    SUBJECT="Backup All Users - $FINAL_STATUS"
-    BODY=$(cat "$LOG_FILE")
-    send_notification "$SUBJECT" "$BODY" "$NOTIFY_ADMIN_BACKUP"
+    HOST=$(hostname 2>/dev/null || echo "server")
+    if [ "$FINAL_STATUS" = "SUCCESS" ]; then
+        SUBJECT="[Borg Backup SUCCESS] $HOST - $SUCCESSFUL_USERS users backed up"
+    else
+        SUBJECT="[Borg Backup FAILED] $HOST - $FAILED_USERS failed, $SUCCESSFUL_USERS ok"
+    fi
+    
+    BODY=""
+    BODY="${BODY}============================================\n"
+    BODY="${BODY}Borg Backup Report - $(date '+%Y-%m-%d %H:%M:%S')\n"
+    BODY="${BODY}Host: $HOST\n"
+    BODY="${BODY}Status: $FINAL_STATUS\n"
+    BODY="${BODY}--------------------------------------------\n"
+    BODY="${BODY}Total: $TOTAL_USERS | Success: $SUCCESSFUL_USERS | Failed: $FAILED_USERS | Skipped: $SKIPPED_USERS\n"
+    BODY="${BODY}Runtime: ${RUNTIME_MIN} min\n"
+    BODY="${BODY}============================================\n\n"
+    BODY="${BODY}--- Backup Log ---\n"
+    BODY="${BODY}$(cat "$LOG_FILE")\n"
+    
+    # Include global report if configured
+    if [ -n "$NOTIFY_GLOBAL_REPORT" ] && [ "$NOTIFY_GLOBAL_REPORT" != "never" ]; then
+        TODAY_WDAY=$(date +%w)
+        SEND_GLOBAL="no"
+        if [ "$NOTIFY_GLOBAL_REPORT" = "daily" ]; then
+            SEND_GLOBAL="yes"
+        elif [ "$NOTIFY_GLOBAL_REPORT" = "weekly" ] && [ "$TODAY_WDAY" = "${NOTIFY_GLOBAL_REPORT_WEEKDAY:-1}" ]; then
+            SEND_GLOBAL="yes"
+        fi
+        if [ "$SEND_GLOBAL" = "yes" ]; then
+            BODY="${BODY}\n--- Global Report ---\n"
+            BODY="${BODY}$(/usr/local/vesta/bin/v-borg-report-global email 2>/dev/null)\n"
+        fi
+    fi
+    
+    echo -e "$BODY" | send_notification_stdin "$SUBJECT" "$NOTIFY_ADMIN_BACKUP"
 fi
 
 #----------------------------------------------------------#

@@ -152,11 +152,24 @@ else
     echo "$(get_timestamp) Errors: $ERRORS" | tee -a "$LOG_FILE"
 fi
 
-# Send notification if configured
-if [ -n "$NOTIFY_ADMIN_BACKUP" ] && [ "$STATUS" = "FAILED" ]; then
-    SUBJECT="Backup Checkup FAILED: $FAILED_CHECKS errors found"
-    BODY=$(cat "$LOG_FILE")
-    send_notification "$SUBJECT" "$BODY" "$NOTIFY_ADMIN_BACKUP"
+# Send notification if configured (always on every run)
+if [ -n "$NOTIFY_ADMIN_BACKUP" ]; then
+    HOST=$(hostname 2>/dev/null || echo "server")
+    if [ "$STATUS" = "PASSED" ]; then
+        SUBJECT="[Borg Checkup SUCCESS] $HOST - All checks passed"
+    else
+        SUBJECT="[Borg Checkup FAILED] $HOST - $FAILED_CHECKS errors found"
+    fi
+    BODY=""
+    BODY="${BODY}============================================\n"
+    BODY="${BODY}Borg Checkup Report - $(date '+%Y-%m-%d %H:%M:%S')\n"
+    BODY="${BODY}Host: $HOST\n"
+    BODY="${BODY}Status: $STATUS\n"
+    BODY="${BODY}Passed: $PASSED_CHECKS | Failed: $FAILED_CHECKS\n"
+    BODY="${BODY}============================================\n\n"
+    BODY="${BODY}--- Checkup Log ---\n"
+    BODY="${BODY}$(cat "$LOG_FILE")\n"
+    echo -e "$BODY" | send_notification_stdin "$SUBJECT" "$NOTIFY_ADMIN_BACKUP"
 fi
 
 log_event "OK" "Backup checkup completed ($PASSED_CHECKS passed, $FAILED_CHECKS failed)"

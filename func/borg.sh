@@ -410,7 +410,7 @@ log_event() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$status] $message" >> "$LOG_DIR/borg.log"
 }
 
-# Send email notification
+# Send email notification (body as argument)
 send_notification() {
     local subject="$1"
     local body="$2"
@@ -431,6 +431,29 @@ send_notification() {
     else
         # Fallback to system mail
         echo "$body" | mail -s "$subject" "$recipient"
+    fi
+}
+
+# Send email notification (body from stdin - for large bodies)
+send_notification_stdin() {
+    local subject="$1"
+    local recipient="$2"
+    
+    if [ -z "$recipient" ]; then
+        recipient="$NOTIFY_ADMIN_BACKUP"
+    fi
+    
+    if [ -z "$recipient" ]; then
+        return 0
+    fi
+    
+    # Use myVesta sendmail if available
+    if [ -f "$VESTA_DIR/func/main.sh" ]; then
+        source "$VESTA_DIR/func/main.sh"
+        $SENDMAIL -s "$subject" "$recipient"
+    else
+        # Fallback to system mail
+        mail -s "$subject" "$recipient"
     fi
 }
 

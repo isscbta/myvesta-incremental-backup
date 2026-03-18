@@ -298,20 +298,32 @@ fi
 #----------------------------------------------------------#
 
 if [ "$notify" = "yes" ] || [ -n "$NOTIFY_ADMIN_BACKUP" ]; then
-    SUBJECT="Backup $BACKUP_STATUS: User $user"
-    BODY=$(cat "$LOG_FILE")
+    HOST=$(hostname 2>/dev/null || echo "server")
+    if [ "$BACKUP_STATUS" = "SUCCESS" ]; then
+        SUBJECT="[Borg Backup SUCCESS] $HOST - User $user"
+    else
+        SUBJECT="[Borg Backup FAILED] $HOST - User $user"
+    fi
+    BODY=""
+    BODY="${BODY}============================================\n"
+    BODY="${BODY}Borg Backup Report - $(date '+%Y-%m-%d %H:%M:%S')\n"
+    BODY="${BODY}Host: $HOST | User: $user\n"
+    BODY="${BODY}Status: $BACKUP_STATUS\n"
+    BODY="${BODY}============================================\n\n"
+    BODY="${BODY}--- Backup Log ---\n"
+    BODY="${BODY}$(cat "$LOG_FILE")\n"
     
     if [ "$notify" = "yes" ]; then
         # Notify user
         USER_EMAIL=$(/usr/local/vesta/bin/v-list-user "$user" plain | awk '{print $2}')
         if [ -n "$USER_EMAIL" ]; then
-            send_notification "$SUBJECT" "$BODY" "$USER_EMAIL"
+            echo -e "$BODY" | send_notification_stdin "$SUBJECT" "$USER_EMAIL"
         fi
     fi
     
-    if [ -n "$NOTIFY_ADMIN_BACKUP" ] && [ "$BACKUP_STATUS" = "FAILED" ]; then
-        # Notify admin on failure
-        send_notification "$SUBJECT" "$BODY" "$NOTIFY_ADMIN_BACKUP"
+    if [ -n "$NOTIFY_ADMIN_BACKUP" ]; then
+        # Notify admin on every run (success or failure)
+        echo -e "$BODY" | send_notification_stdin "$SUBJECT" "$NOTIFY_ADMIN_BACKUP"
     fi
 fi
 

@@ -168,10 +168,22 @@ fi
 #                Notifications                             #
 #----------------------------------------------------------#
 
-if [ -n "$NOTIFY_ADMIN_BACKUP" ] && [ "$BACKUP_STATUS" = "FAILED" ]; then
-    SUBJECT="System Backup $BACKUP_STATUS"
-    BODY=$(cat "$LOG_FILE")
-    send_notification "$SUBJECT" "$BODY" "$NOTIFY_ADMIN_BACKUP"
+if [ -n "$NOTIFY_ADMIN_BACKUP" ]; then
+    HOST=$(hostname 2>/dev/null || echo "server")
+    if [ "$BACKUP_STATUS" = "SUCCESS" ]; then
+        SUBJECT="[Borg Backup SUCCESS] $HOST - System backup"
+    else
+        SUBJECT="[Borg Backup FAILED] $HOST - System backup"
+    fi
+    BODY=""
+    BODY="${BODY}============================================\n"
+    BODY="${BODY}Borg System Backup Report - $(date '+%Y-%m-%d %H:%M:%S')\n"
+    BODY="${BODY}Host: $HOST\n"
+    BODY="${BODY}Status: $BACKUP_STATUS\n"
+    BODY="${BODY}============================================\n\n"
+    BODY="${BODY}--- Backup Log ---\n"
+    BODY="${BODY}$(cat "$LOG_FILE")\n"
+    echo -e "$BODY" | send_notification_stdin "$SUBJECT" "$NOTIFY_ADMIN_BACKUP"
 fi
 
 #----------------------------------------------------------#
