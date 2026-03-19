@@ -116,9 +116,9 @@ eval borg create \
     $EXCLUDE_ARGS \
     "$USER_REPO::$ARCHIVE_NAME" \
     "$HOME_DIR/$user" \
-    >> "$LOG_FILE" 2>&1
-
-if [ $? -eq 0 ]; then
+    2>&1 | tee -a "$LOG_FILE"
+BORG_EXIT=${PIPESTATUS[0]}
+if [ "$BORG_EXIT" -eq 0 ]; then
     echo "$(get_timestamp) Home directory backup completed successfully" | tee -a "$LOG_FILE"
 else
     echo "$(get_timestamp) Error: Home directory backup failed" | tee -a "$LOG_FILE"
@@ -127,7 +127,7 @@ fi
 
 # Prune old archives
 echo "$(get_timestamp) Pruning old archives..." | tee -a "$LOG_FILE"
-borg prune $OPTIONS_PRUNE "$USER_REPO" >> "$LOG_FILE" 2>&1
+borg prune $OPTIONS_PRUNE "$USER_REPO" 2>&1 | tee -a "$LOG_FILE"
 
 #----------------------------------------------------------#
 #                Backup myVesta Configuration              #
@@ -147,9 +147,9 @@ if [ -d "$VESTA_USER_DIR" ]; then
         $OPTIONS_CREATE \
         "$VESTA_REPO::$VESTA_ARCHIVE_NAME" \
         "$VESTA_USER_DIR" \
-        >> "$LOG_FILE" 2>&1
-    
-    if [ $? -eq 0 ]; then
+        2>&1 | tee -a "$LOG_FILE"
+    BORG_EXIT=${PIPESTATUS[0]}
+    if [ "$BORG_EXIT" -eq 0 ]; then
         echo "$(get_timestamp) myVesta config backup completed successfully" | tee -a "$LOG_FILE"
     else
         echo "$(get_timestamp) Error: myVesta config backup failed" | tee -a "$LOG_FILE"
@@ -157,7 +157,7 @@ if [ -d "$VESTA_USER_DIR" ]; then
     fi
     
     # Prune old vesta archives
-    borg prune $OPTIONS_PRUNE "$VESTA_REPO" >> "$LOG_FILE" 2>&1
+    borg prune $OPTIONS_PRUNE "$VESTA_REPO" 2>&1 | tee -a "$LOG_FILE"
 fi
 
 #----------------------------------------------------------#
@@ -180,15 +180,14 @@ if [ -n "$DATABASES" ]; then
         
         # Dump database and pipe directly to borg
         mysqldump "$database" --opt --routines --skip-comments 2>>"$LOG_FILE" | \
-            borg create $OPTIONS_CREATE "$DB_REPO::$DB_ARCHIVE_NAME" - \
-            >> "$LOG_FILE" 2>&1
-        
-        if [ $? -eq 0 ]; then
+            borg create $OPTIONS_CREATE "$DB_REPO::$DB_ARCHIVE_NAME" - 2>&1 | tee -a "$LOG_FILE"
+        BORG_EXIT=${PIPESTATUS[1]}
+        if [ "$BORG_EXIT" -eq 0 ]; then
             echo "$(get_timestamp) Database $database backed up successfully" | tee -a "$LOG_FILE"
             ((DB_COUNT++))
             
             # Prune old database archives (keep only archives for this specific database)
-            borg prune $OPTIONS_PRUNE --prefix "$database-" "$DB_REPO" >> "$LOG_FILE" 2>&1
+            borg prune $OPTIONS_PRUNE --prefix "$database-" "$DB_REPO" 2>&1 | tee -a "$LOG_FILE"
         else
             echo "$(get_timestamp) Error: Database $database backup failed" | tee -a "$LOG_FILE"
             BACKUP_FAILED=1
