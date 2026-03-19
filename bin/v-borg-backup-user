@@ -225,11 +225,14 @@ if [ "$BACKUP_MODE" = "both" ] && [ -z "$BACKUP_FAILED" ]; then
     echo "$(get_timestamp) ========== SYNCING TO REMOTE SERVER ==========" | tee -a "$LOG_FILE"
     
     if [ "$REMOTE_SYNC_METHOD" = "rsync" ]; then
-        # Build remote paths
-        REMOTE_BASE="ssh://${REMOTE_BACKUP_SERVER}:${REMOTE_BACKUP_PORT}${REMOTE_BACKUP_DIR}"
-        REMOTE_USER_REPO="${REMOTE_BASE}/home/$user"
-        REMOTE_DB_REPO="${REMOTE_BASE}/db/$user"
-        REMOTE_VESTA_REPO="${REMOTE_BASE}/vesta"
+        # Create remote directory structure (required for rsync - some SFTP/Storage Box don't create nested dirs)
+        echo "$(get_timestamp) Ensuring remote directories exist..." | tee -a "$LOG_FILE"
+        REMOTE_MKDIR_CMD="mkdir -p ${REMOTE_BACKUP_DIR}/home/$user ${REMOTE_BACKUP_DIR}/db/$user ${REMOTE_BACKUP_DIR}/vesta"
+        if [ -n "$REMOTE_BACKUP_PASSWORD" ]; then
+            sshpass -p "$REMOTE_BACKUP_PASSWORD" ssh -p "$REMOTE_BACKUP_PORT" -o StrictHostKeyChecking=no "$REMOTE_BACKUP_SERVER" "$REMOTE_MKDIR_CMD" >> "$LOG_FILE" 2>&1
+        else
+            ssh -p "$REMOTE_BACKUP_PORT" -o StrictHostKeyChecking=no "$REMOTE_BACKUP_SERVER" "$REMOTE_MKDIR_CMD" >> "$LOG_FILE" 2>&1
+        fi
         
         # Sync user repo
         echo "$(get_timestamp) Syncing user repository to remote..." | tee -a "$LOG_FILE"
