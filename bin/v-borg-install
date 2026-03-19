@@ -112,22 +112,29 @@ else
     print_info "Updating package list..."
     apt-get update -qq
     
-    print_info "Installing Borg Backup and dependencies..."
-    apt-get install -y borgbackup sshpass
+    print_info "Installing Borg Backup..."
+    apt-get install -y borgbackup
     
     if [ $? -eq 0 ]; then
         BORG_VERSION=$(borg --version | grep -oP '\d+\.\d+\.\d+' | head -1)
         print_success "Borg Backup installed successfully (version $BORG_VERSION)"
-        
-        # Check if sshpass was installed
-        if command -v sshpass &> /dev/null; then
-            print_success "sshpass installed (for password-based remote backups)"
-        else
-            print_info "sshpass not available (only SSH key auth will work)"
-        fi
     else
         print_error "Failed to install Borg Backup"
         exit 1
+    fi
+fi
+
+# Install sshpass (always - needed for password-based remote backups)
+if command -v sshpass &> /dev/null; then
+    print_info "sshpass is already installed"
+else
+    print_info "Installing sshpass (for password-based remote backups)..."
+    apt-get update -qq 2>/dev/null
+    apt-get install -y sshpass 2>/dev/null
+    if command -v sshpass &> /dev/null; then
+        print_success "sshpass installed"
+    else
+        print_info "sshpass not available (only SSH key auth will work for remote)"
     fi
 fi
 
