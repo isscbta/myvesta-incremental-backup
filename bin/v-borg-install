@@ -30,6 +30,10 @@ print_info() {
     echo -e "${YELLOW}→${NC} $1"
 }
 
+print_warning() {
+    echo -e "${YELLOW}⚠${NC} $1"
+}
+
 print_header() {
     echo ""
     echo "=========================================="
@@ -156,6 +160,43 @@ mkdir -p /backup/borg/{home,db,vesta,etc,scripts}
 chmod 750 /backup/borg
 print_success "Backup directory created: /backup/borg"
 
+# Detect existing Borg repositories (migration / old installs)
+EXISTING_BORG_REPO_DIRS=""
+EXISTING_BORG_FOUND="no"
+while IFS= read -r cfg; do
+    [ -f "$cfg" ] || continue
+    if grep -q '^repositoryversion' "$cfg" 2>/dev/null; then
+        EXISTING_BORG_REPO_DIRS+="$(dirname "$cfg")"$'\n'
+        EXISTING_BORG_FOUND="yes"
+    fi
+done < <(find /backup/borg -type f -name config 2>/dev/null)
+
+if [ "$EXISTING_BORG_FOUND" = "yes" ]; then
+    print_header "Existing Borg repositories detected"
+    print_warning "Found Borg data under /backup/borg from a previous setup."
+    echo ""
+    while IFS= read -r repodir; do
+        [ -z "$repodir" ] && continue
+        print_info "  $repodir"
+        if [ -f "$repodir/config" ]; then
+            enc=$(grep '^encryption' "$repodir/config" 2>/dev/null | head -1 | tr -d '\r')
+            [ -n "$enc" ] && echo "      $enc"
+        fi
+    done <<< "$(echo "$EXISTING_BORG_REPO_DIRS" | sort -u)"
+    echo ""
+    print_warning "If you use the NEW default (ENCRYPTION_MODE=\"none\", empty BORG_PASSPHRASE):"
+    echo "  • Encrypted old repos will make backups FAIL in cron (passphrase cannot be entered)."
+    echo ""
+    echo "  Options:"
+    echo "    A) Set BORG_PASSPHRASE and ENCRYPTION_MODE to match the old repos in borg.conf"
+    echo "    B) Remove old repos and start clean (only if you do not need old archives):"
+    echo ""
+    echo "       rm -rf /backup/borg/home/* /backup/borg/db/* /backup/borg/vesta/* \\"
+    echo "              /backup/borg/etc/* /backup/borg/scripts/*"
+    echo "       mkdir -p /backup/borg/{home,db,vesta,etc,scripts} && chmod 750 /backup/borg"
+    echo ""
+fi
+
 # Create temp directory for downloads
 mkdir -p /tmp/borg-install
 cd /tmp/borg-install
@@ -264,6 +305,11 @@ fi
 #----------------------------------------------------------#
 
 print_header "Installation Complete!"
+
+if [ "$EXISTING_BORG_FOUND" = "yes" ]; then
+    print_warning "Reminder: existing Borg repos were reported above — fix passphrase or clean /backup/borg before relying on cron."
+    echo ""
+fi
 
 echo ""
 echo "⚠️  IMPORTANT: Configure your backup settings before use!"
