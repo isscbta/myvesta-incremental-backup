@@ -54,7 +54,7 @@ if [ "$BACKUP_MODE" = "both" ]; then
         USER_REPO="$LOCAL_USER_REPO"
     else
         # Local repo doesn't exist, use remote
-        REMOTE_BASE="ssh://${REMOTE_BACKUP_SERVER}:${REMOTE_BACKUP_PORT}${REMOTE_BACKUP_DIR}"
+        REMOTE_BASE="ssh://${REMOTE_BACKUP_SSH_TARGET}:${REMOTE_BACKUP_PORT}${REMOTE_BACKUP_DIR}"
         USER_REPO="${REMOTE_BASE}/home/$user"
     fi
 else

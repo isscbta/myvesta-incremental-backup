@@ -61,7 +61,7 @@ v-borg-install
 
 Edit `/usr/local/vesta/conf/borg.conf` and configure at minimum:
 - `BACKUP_MODE` (local, remote, or both)
-- `REMOTE_BACKUP_SERVER` (if using remote mode)
+- `REMOTE_BACKUP_USER` and `REMOTE_BACKUP_SERVER` (if using remote mode; SSH uses `USER@SERVER`)
 - `ENCRYPTION_MODE` (if using encryption)
 
 See [Configuration](#configuration) section for details.
@@ -183,10 +183,12 @@ BACKUP_MODE="local"
 #### Remote Backup Settings
 
 ```bash
-# Remote backup server (used if BACKUP_MODE is "remote" or "both")
-# Format for Hetzner Storage Box: u123456@u123456.your-storagebox.de
-# Format for custom SSH: user@hostname
-REMOTE_BACKUP_SERVER=""
+# Remote backup SSH identity (BACKUP_MODE remote or both)
+# Preferred: separate login and hostname (Storage Box sub-accounts, etc.)
+REMOTE_BACKUP_USER="u123456-sub2"
+REMOTE_BACKUP_SERVER="u123456.your-storagebox.de"
+# Legacy: single line user@host with REMOTE_BACKUP_USER="" still works
+# REMOTE_BACKUP_SERVER="u123456@u123456.your-storagebox.de"
 
 # SSH port (default: 22; Hetzner Storage Box uses 23)
 REMOTE_BACKUP_PORT="23"
@@ -210,11 +212,11 @@ REMOTE_SYNC_METHOD="rsync"
 # Generate SSH key
 ssh-keygen -t ed25519 -f ~/.ssh/borg_backup
 
-# Copy to remote server (Hetzner Storage Box example)
-ssh-copy-id -p 23 -i ~/.ssh/borg_backup.pub u123456@u123456.your-storagebox.de
+# Copy to remote server (matches REMOTE_BACKUP_USER@REMOTE_BACKUP_SERVER)
+ssh-copy-id -p 23 -i ~/.ssh/borg_backup.pub u123456-sub2@u123456.your-storagebox.de
 
 # Test connection
-ssh -p 23 -i ~/.ssh/borg_backup u123456@u123456.your-storagebox.de
+ssh -p 23 -i ~/.ssh/borg_backup u123456-sub2@u123456.your-storagebox.de
 ```
 
 #### Exclusions
@@ -1063,7 +1065,8 @@ vi /usr/local/vesta/conf/borg.conf
 
 # Set:
 BACKUP_MODE="remote"
-REMOTE_BACKUP_SERVER="u123456@u123456.your-storagebox.de"
+REMOTE_BACKUP_USER="u123456-sub2"
+REMOTE_BACKUP_SERVER="u123456.your-storagebox.de"
 REMOTE_BACKUP_PORT="23"
 REMOTE_BACKUP_DIR="/home/borg"
 REMOTE_BACKUP_PASSWORD="your-password"  # Or leave empty for SSH key auth
@@ -1073,11 +1076,11 @@ REMOTE_BACKUP_PASSWORD="your-password"  # Or leave empty for SSH key auth
 
 # 3. Option B: SSH key authentication (recommended, more secure)
 ssh-keygen -t ed25519 -f ~/.ssh/borg_backup
-ssh-copy-id -p 23 -i ~/.ssh/borg_backup.pub u123456@u123456.your-storagebox.de
+ssh-copy-id -p 23 -i ~/.ssh/borg_backup.pub u123456-sub2@u123456.your-storagebox.de
 # Leave REMOTE_BACKUP_PASSWORD empty in config
 
 # 4. Test connection
-ssh -p 23 u123456@u123456.your-storagebox.de
+ssh -p 23 u123456-sub2@u123456.your-storagebox.de
 
 # 5. Test backup
 v-borg-backup-user admin
@@ -1105,7 +1108,8 @@ vi /usr/local/vesta/conf/borg.conf
 
 # Set:
 BACKUP_MODE="both"
-REMOTE_BACKUP_SERVER="u123456@u123456.your-storagebox.de"
+REMOTE_BACKUP_USER="u123456-sub2"
+REMOTE_BACKUP_SERVER="u123456.your-storagebox.de"
 REMOTE_BACKUP_PORT="23"
 REMOTE_BACKUP_DIR="/home/borg"
 REMOTE_BACKUP_PASSWORD="your-password"  # Or use SSH keys
@@ -1202,7 +1206,8 @@ vi /usr/local/vesta/conf/borg.conf
 ENCRYPTION_MODE="repokey-blake2"
 BORG_PASSPHRASE="your-generated-passphrase-here"
 BACKUP_MODE="remote"
-REMOTE_BACKUP_SERVER="u123456@u123456.your-storagebox.de"
+REMOTE_BACKUP_USER="u123456-sub2"
+REMOTE_BACKUP_SERVER="u123456.your-storagebox.de"
 
 # 3. Secure config file
 chmod 600 /usr/local/vesta/conf/borg.conf
@@ -1266,7 +1271,8 @@ vi /usr/local/vesta/conf/borg.conf
 
 # Set:
 BACKUP_MODE="remote"  # Or "both" if you want to restore to local
-REMOTE_BACKUP_SERVER="u123456@u123456.your-storagebox.de"
+REMOTE_BACKUP_USER="u123456-sub2"
+REMOTE_BACKUP_SERVER="u123456.your-storagebox.de"
 REMOTE_BACKUP_PORT="23"
 REMOTE_BACKUP_DIR="/home/borg"
 REMOTE_BACKUP_PASSWORD="your-password"
@@ -1420,11 +1426,11 @@ chmod 755 /backup/borg
 
 **Solution**:
 ```bash
-# Test SSH connection
-ssh -p 23 u123456@u123456.your-storagebox.de
+# Test SSH connection (use same user@host as borg.conf → REMOTE_BACKUP_SSH_TARGET)
+ssh -p 23 u123456-sub2@u123456.your-storagebox.de
 
 # Check SSH key authentication
-ssh -p 23 -i ~/.ssh/borg_backup u123456@u123456.your-storagebox.de
+ssh -p 23 -i ~/.ssh/borg_backup u123456-sub2@u123456.your-storagebox.de
 
 # Verify config
 grep REMOTE_BACKUP /usr/local/vesta/conf/borg.conf
@@ -1507,7 +1513,7 @@ borg check /backup/borg/home/admin
 
 **Test Remote Connection**:
 ```bash
-ssh -p 23 u123456@u123456.your-storagebox.de
+ssh -p 23 u123456-sub2@u123456.your-storagebox.de
 ```
 
 **View Recent Logs**:
@@ -1544,7 +1550,7 @@ borg extract /backup/borg/home/admin::2025-10-16_17-43-57 path/to/file
 3. **Use SSH Key Authentication** (not passwords):
    ```bash
    ssh-keygen -t ed25519 -f ~/.ssh/borg_backup
-   ssh-copy-id -p 23 -i ~/.ssh/borg_backup.pub u123456@u123456.your-storagebox.de
+   ssh-copy-id -p 23 -i ~/.ssh/borg_backup.pub u123456-sub2@u123456.your-storagebox.de
    ```
 
 4. **Store Passphrase Securely**:

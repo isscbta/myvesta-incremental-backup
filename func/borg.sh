@@ -27,6 +27,19 @@ source_borg_config() {
     
     source "$config_file"
     
+    # SSH login passed to Borg, ssh/rsync: user@hostname
+    # Preferred: REMOTE_BACKUP_SERVER=host + REMOTE_BACKUP_USER=login
+    # Legacy (still supported): REMOTE_BACKUP_SERVER="login@hostname" with empty REMOTE_BACKUP_USER
+    REMOTE_BACKUP_USER="${REMOTE_BACKUP_USER:-}"
+    if [[ "$REMOTE_BACKUP_SERVER" == *"@"* ]]; then
+        REMOTE_BACKUP_SSH_TARGET="$REMOTE_BACKUP_SERVER"
+    elif [ -n "$REMOTE_BACKUP_USER" ] && [ -n "$REMOTE_BACKUP_SERVER" ]; then
+        REMOTE_BACKUP_SSH_TARGET="${REMOTE_BACKUP_USER}@${REMOTE_BACKUP_SERVER}"
+    else
+        REMOTE_BACKUP_SSH_TARGET="$REMOTE_BACKUP_SERVER"
+    fi
+    export REMOTE_BACKUP_SSH_TARGET
+    
     # Export Borg environment variables
     export BORG_UNKNOWN_UNENCRYPTED_REPO_ACCESS_IS_OK=yes
     export BORG_RELOCATED_REPO_ACCESS_IS_OK=yes
@@ -46,11 +59,11 @@ source_borg_config() {
                 exit 1
             fi
             
-            # Export SSH command with sshpass
-            export BORG_RSH="sshpass -p '$REMOTE_BACKUP_PASSWORD' ssh -o StrictHostKeyChecking=no"
+            # Export SSH command with sshpass (port must match REMOTE_BACKUP_PORT)
+            export BORG_RSH="sshpass -p '$REMOTE_BACKUP_PASSWORD' ssh -p $REMOTE_BACKUP_PORT -o StrictHostKeyChecking=no"
         else
             # SSH key authentication (no password)
-            export BORG_RSH="ssh -o StrictHostKeyChecking=no"
+            export BORG_RSH="ssh -p $REMOTE_BACKUP_PORT -o StrictHostKeyChecking=no"
         fi
     fi
 }
@@ -102,7 +115,7 @@ build_borg_repo_path() {
                 exit 1
             fi
             
-            local remote_base="ssh://${REMOTE_BACKUP_SERVER}:${REMOTE_BACKUP_PORT}${REMOTE_BACKUP_DIR}"
+            local remote_base="ssh://${REMOTE_BACKUP_SSH_TARGET}:${REMOTE_BACKUP_PORT}${REMOTE_BACKUP_DIR}"
             
             case "$repo_type" in
                 user)    repo_path="${remote_base}/home/$identifier" ;;
@@ -148,7 +161,7 @@ init_repo_if_needed() {
         echo "Creating remote parent directory: $parent_dir"
         
         # Use config vars for host/port/user (more reliable than parsing URL)
-        local ssh_target="${REMOTE_BACKUP_SERVER}"
+        local ssh_target="${REMOTE_BACKUP_SSH_TARGET}"
         
         # Create parent directories on remote server
         if [ -n "$REMOTE_BACKUP_PASSWORD" ]; then

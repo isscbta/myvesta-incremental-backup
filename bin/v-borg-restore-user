@@ -76,7 +76,7 @@ fi
 # For "both" mode, check if both local and remote exist, then ask user
 if [ "$BACKUP_MODE" = "both" ]; then
     LOCAL_USER_REPO=$(build_borg_repo_path "user" "$user")
-    REMOTE_BASE="ssh://${REMOTE_BACKUP_SERVER}:${REMOTE_BACKUP_PORT}${REMOTE_BACKUP_DIR}"
+    REMOTE_BASE="ssh://${REMOTE_BACKUP_SSH_TARGET}:${REMOTE_BACKUP_PORT}${REMOTE_BACKUP_DIR}"
     REMOTE_USER_REPO="${REMOTE_BASE}/home/$user"
     
     LOCAL_EXISTS=0

@@ -229,19 +229,19 @@ if [ "$BACKUP_MODE" = "both" ] && [ -z "$BACKUP_FAILED" ]; then
         echo "$(get_timestamp) Ensuring remote directories exist..." | tee -a "$LOG_FILE"
         REMOTE_MKDIR_CMD="mkdir -p ${REMOTE_BACKUP_DIR}/home/$user ${REMOTE_BACKUP_DIR}/db/$user ${REMOTE_BACKUP_DIR}/vesta"
         if [ -n "$REMOTE_BACKUP_PASSWORD" ]; then
-            sshpass -p "$REMOTE_BACKUP_PASSWORD" ssh -p "$REMOTE_BACKUP_PORT" -o StrictHostKeyChecking=no "$REMOTE_BACKUP_SERVER" "$REMOTE_MKDIR_CMD" >> "$LOG_FILE" 2>&1
+            sshpass -p "$REMOTE_BACKUP_PASSWORD" ssh -p "$REMOTE_BACKUP_PORT" -o StrictHostKeyChecking=no "$REMOTE_BACKUP_SSH_TARGET" "$REMOTE_MKDIR_CMD" >> "$LOG_FILE" 2>&1
         else
-            ssh -p "$REMOTE_BACKUP_PORT" -o StrictHostKeyChecking=no "$REMOTE_BACKUP_SERVER" "$REMOTE_MKDIR_CMD" >> "$LOG_FILE" 2>&1
+            ssh -p "$REMOTE_BACKUP_PORT" -o StrictHostKeyChecking=no "$REMOTE_BACKUP_SSH_TARGET" "$REMOTE_MKDIR_CMD" >> "$LOG_FILE" 2>&1
         fi
         
         # Sync user repo
         echo "$(get_timestamp) Syncing user repository to remote..." | tee -a "$LOG_FILE"
         if [ -n "$REMOTE_BACKUP_PASSWORD" ]; then
             rsync -avz --delete --stats -e "sshpass -p '$REMOTE_BACKUP_PASSWORD' ssh -p $REMOTE_BACKUP_PORT -o StrictHostKeyChecking=no" \
-                "$USER_REPO/" "${REMOTE_BACKUP_SERVER}:${REMOTE_BACKUP_DIR}/home/$user/" >> "$LOG_FILE" 2>&1
+                "$USER_REPO/" "${REMOTE_BACKUP_SSH_TARGET}:${REMOTE_BACKUP_DIR}/home/$user/" >> "$LOG_FILE" 2>&1
         else
             rsync -avz --delete --stats -e "ssh -p $REMOTE_BACKUP_PORT -o StrictHostKeyChecking=no" \
-                "$USER_REPO/" "${REMOTE_BACKUP_SERVER}:${REMOTE_BACKUP_DIR}/home/$user/" >> "$LOG_FILE" 2>&1
+                "$USER_REPO/" "${REMOTE_BACKUP_SSH_TARGET}:${REMOTE_BACKUP_DIR}/home/$user/" >> "$LOG_FILE" 2>&1
         fi
         
         if [ $? -eq 0 ]; then
@@ -254,10 +254,10 @@ if [ "$BACKUP_MODE" = "both" ] && [ -z "$BACKUP_FAILED" ]; then
         echo "$(get_timestamp) Syncing database repository to remote..." | tee -a "$LOG_FILE"
         if [ -n "$REMOTE_BACKUP_PASSWORD" ]; then
             rsync -avz --delete --stats -e "sshpass -p '$REMOTE_BACKUP_PASSWORD' ssh -p $REMOTE_BACKUP_PORT -o StrictHostKeyChecking=no" \
-                "$DB_REPO/" "${REMOTE_BACKUP_SERVER}:${REMOTE_BACKUP_DIR}/db/$user/" >> "$LOG_FILE" 2>&1
+                "$DB_REPO/" "${REMOTE_BACKUP_SSH_TARGET}:${REMOTE_BACKUP_DIR}/db/$user/" >> "$LOG_FILE" 2>&1
         else
             rsync -avz --delete --stats -e "ssh -p $REMOTE_BACKUP_PORT -o StrictHostKeyChecking=no" \
-                "$DB_REPO/" "${REMOTE_BACKUP_SERVER}:${REMOTE_BACKUP_DIR}/db/$user/" >> "$LOG_FILE" 2>&1
+                "$DB_REPO/" "${REMOTE_BACKUP_SSH_TARGET}:${REMOTE_BACKUP_DIR}/db/$user/" >> "$LOG_FILE" 2>&1
         fi
         
         if [ $? -eq 0 ]; then
@@ -270,10 +270,10 @@ if [ "$BACKUP_MODE" = "both" ] && [ -z "$BACKUP_FAILED" ]; then
         echo "$(get_timestamp) Syncing myVesta config to remote..." | tee -a "$LOG_FILE"
         if [ -n "$REMOTE_BACKUP_PASSWORD" ]; then
             rsync -avz --stats -e "sshpass -p '$REMOTE_BACKUP_PASSWORD' ssh -p $REMOTE_BACKUP_PORT -o StrictHostKeyChecking=no" \
-                "$VESTA_REPO/" "${REMOTE_BACKUP_SERVER}:${REMOTE_BACKUP_DIR}/vesta/" >> "$LOG_FILE" 2>&1
+                "$VESTA_REPO/" "${REMOTE_BACKUP_SSH_TARGET}:${REMOTE_BACKUP_DIR}/vesta/" >> "$LOG_FILE" 2>&1
         else
             rsync -avz --stats -e "ssh -p $REMOTE_BACKUP_PORT -o StrictHostKeyChecking=no" \
-                "$VESTA_REPO/" "${REMOTE_BACKUP_SERVER}:${REMOTE_BACKUP_DIR}/vesta/" >> "$LOG_FILE" 2>&1
+                "$VESTA_REPO/" "${REMOTE_BACKUP_SSH_TARGET}:${REMOTE_BACKUP_DIR}/vesta/" >> "$LOG_FILE" 2>&1
         fi
         
         if [ $? -eq 0 ]; then

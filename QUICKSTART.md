@@ -91,7 +91,8 @@ BACKUP_DIR="/backup/borg"
 
 ```bash
 BACKUP_MODE="remote"
-REMOTE_BACKUP_SERVER="u123456@u123456.your-storagebox.de"
+REMOTE_BACKUP_USER="u123456-sub2"
+REMOTE_BACKUP_SERVER="u123456.your-storagebox.de"
 REMOTE_BACKUP_PORT="23"
 REMOTE_BACKUP_DIR="/home/borg"
 ```
@@ -100,7 +101,7 @@ Before the first remote backup, set up SSH keys:
 
 ```bash
 ssh-keygen -t ed25519
-ssh-copy-id -p 23 u123456@u123456.your-storagebox.de
+ssh-copy-id -p 23 u123456-sub2@u123456.your-storagebox.de
 ```
 
 ### Both Mode (Local + Remote Sync)
