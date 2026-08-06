@@ -437,36 +437,75 @@ send_notification() {
         return 0
     fi
     
-    # Use myVesta sendmail if available
     if [ -f "$VESTA_DIR/func/main.sh" ]; then
         source "$VESTA_DIR/func/main.sh"
-        echo "$body" | $SENDMAIL -s "$subject" "$recipient"
-    else
-        # Fallback to system mail
-        echo "$body" | mail -s "$subject" "$recipient"
     fi
+
+    IFS=',' read -ra recipient_array <<< "$recipient"
+
+    for recipient_email in "${recipient_array[@]}"; do
+        # Remove whitespace from beginning and end
+        recipient_email="${recipient_email#"${recipient_email%%[![:space:]]*}"}"
+        recipient_email="${recipient_email%"${recipient_email##*[![:space:]]}"}"
+
+        [[ -z "$recipient_email" ]] && continue
+
+        # Use myVesta sendmail if available
+        if [ -f "$VESTA_DIR/func/main.sh" ]; then
+            echo "$body" | $SENDMAIL -s "$subject" "$recipient_email"
+        else
+            # Fallback to system mail
+            echo "$body" | mail -s "$subject" "$recipient_email"
+        fi
+    done
+
+    return 0
 }
 
 # Send email notification (body from stdin - for large bodies)
 send_notification_stdin() {
-    local subject="$1"
-    local recipient="$2"
-    
-    if [ -z "$recipient" ]; then
-        recipient="$NOTIFY_ADMIN_BACKUP"
+    local subject="${1:-}"
+    local recipient="${2:-}"
+    local recipient_email
+    local body_file
+
+    if [[ -z "$recipient" ]]; then
+        recipient="${NOTIFY_ADMIN_BACKUP:-}"
     fi
-    
-    if [ -z "$recipient" ]; then
+
+    if [[ -z "$recipient" ]]; then
         return 0
     fi
-    
-    # Use myVesta sendmail if available
-    if [ -f "$VESTA_DIR/func/main.sh" ]; then
+
+    body_file=$(mktemp) || return 1
+
+    # Save complete stdin only once
+    cat > "$body_file"
+
+    body=$(cat "$body_file")
+
+    if [[ -f "$VESTA_DIR/func/main.sh" ]]; then
         source "$VESTA_DIR/func/main.sh"
-        $SENDMAIL -s "$subject" "$recipient"
-    else
-        # Fallback to system mail
-        mail -s "$subject" "$recipient"
+    fi
+
+    IFS=',' read -ra recipient_array <<< "$recipient"
+
+    for recipient_email in "${recipient_array[@]}"; do
+        # Remove whitespace from beginning and end
+        recipient_email="${recipient_email#"${recipient_email%%[![:space:]]*}"}"
+        recipient_email="${recipient_email%"${recipient_email##*[![:space:]]}"}"
+
+        [[ -z "$recipient_email" ]] && continue
+
+        if [[ -f "$VESTA_DIR/func/main.sh" ]]; then
+            "$SENDMAIL" -s "$subject" "$recipient_email" < "$body_file"
+        else
+            mail -s "$subject" "$recipient_email" < "$body_file"
+        fi
+    done
+
+    if [ -f "$body_file" ]; then
+        rm -f "$body_file"
     fi
 }
 

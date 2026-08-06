@@ -9,3 +9,5 @@ IMPLEMENTATION-STATUS.md
 
 # macOS
 .DS_Store
+
+.vscode/
