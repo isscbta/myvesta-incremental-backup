@@ -187,6 +187,11 @@ echo "$(get_timestamp) ========== BACKING UP DATABASES ==========" | tee -a "$LO
 DB_COUNT=0
 DATABASES=$(get_user_mysql_databases "$user")
 
+# Clean up stale dump temp files from interrupted runs (older than 1 day)
+if [ -d "$BACKUP_DIR/tmp" ]; then
+    find "$BACKUP_DIR/tmp" -name '*.sql' -mtime +1 -delete 2>/dev/null
+fi
+
 if [ -n "$DATABASES" ]; then
     while IFS= read -r database; do
         if [ -z "$database" ]; then

@@ -1,6 +1,6 @@
 #!/bin/bash
 # info: restore user from borg backup
-# options: DATE USER [WEB] [DNS] [MAIL] [DB]
+# options: DATE USER [WEB] [DNS] [MAIL] [DB] [--from-local|--from-remote]
 #
 # This command restores a user from Borg incremental backup.
 # Supports full restore and partial restore of specific components.
@@ -9,13 +9,37 @@
 #                Variable Definition                       #
 #----------------------------------------------------------#
 
-# Arguments
-date=$1
-user=$2
-web=$3
-dns=$4
-mail=$5
-db=$6
+# Filter flags from "$@"; collect positional args for date/user/web/dns/mail/db
+RESTORE_SOURCE_FORCE=""
+POSITIONAL_ARGS=()
+for arg in "$@"; do
+    case "$arg" in
+        --from-local)
+            if [ "$RESTORE_SOURCE_FORCE" = "remote" ]; then
+                echo "Error: --from-local and --from-remote are mutually exclusive"
+                exit 1
+            fi
+            RESTORE_SOURCE_FORCE="local"
+            ;;
+        --from-remote)
+            if [ "$RESTORE_SOURCE_FORCE" = "local" ]; then
+                echo "Error: --from-local and --from-remote are mutually exclusive"
+                exit 1
+            fi
+            RESTORE_SOURCE_FORCE="remote"
+            ;;
+        *)
+            POSITIONAL_ARGS+=("$arg")
+            ;;
+    esac
+done
+
+date="${POSITIONAL_ARGS[0]:-}"
+user="${POSITIONAL_ARGS[1]:-}"
+web="${POSITIONAL_ARGS[2]:-}"
+dns="${POSITIONAL_ARGS[3]:-}"
+mail="${POSITIONAL_ARGS[4]:-}"
+db="${POSITIONAL_ARGS[5]:-}"
 
 # Source myVesta environment first
 source /etc/profile.d/vesta.sh 2>/dev/null || source /etc/profile
@@ -52,7 +76,7 @@ ensure_log_dir
 
 # Check arguments
 if [ -z "$date" ] || [ -z "$user" ]; then
-    echo "Usage: v-borg-restore-user ARCHIVE USER [WEB] [DNS] [MAIL] [DB]"
+    echo "Usage: v-borg-restore-user ARCHIVE USER [WEB] [DNS] [MAIL] [DB] [--from-local|--from-remote]"
     echo ""
     echo "Arguments:"
     echo "  ARCHIVE - Archive name or date pattern:"
@@ -64,20 +88,60 @@ if [ -z "$date" ] || [ -z "$user" ]; then
     echo "  MAIL    - Restore mail domains (domain1,domain2 or '*' for all)"
     echo "  DB      - Restore databases (db1,db2 or '*' for all)"
     echo ""
+    echo "Options:"
+    echo "  --from-local   Restore from local repositories (non-interactive)"
+    echo "  --from-remote  Restore from remote repositories (non-interactive;"
+    echo "                 works in any BACKUP_MODE if remote is configured)"
+    echo ""
     echo "If no components specified, full user restore is performed"
     echo ""
     echo "Examples:"
     echo "  v-borg-restore-user 2025-10-16_17-43-57 admin"
     echo "  v-borg-restore-user 2025-10-16 admin '*' '*' '*' '*'"
+    echo "  v-borg-restore-user 2026-08-19 admin --from-remote"
     exit 1
 fi
 
+# Repository path helpers (local vs remote via build_borg_repo_path)
+use_local_repos() {
+    local _saved_mode="$BACKUP_MODE"
+    BACKUP_MODE="local"
+    USER_REPO=$(build_borg_repo_path "user" "$user")
+    DB_REPO=$(build_borg_repo_path "db" "$user")
+    VESTA_REPO=$(build_borg_repo_path "vesta" "")
+    BACKUP_MODE="$_saved_mode"
+}
+
+use_remote_repos() {
+    local _saved_mode="$BACKUP_MODE"
+    BACKUP_MODE="remote"
+    USER_REPO=$(build_borg_repo_path "user" "$user")
+    DB_REPO=$(build_borg_repo_path "db" "$user")
+    VESTA_REPO=$(build_borg_repo_path "vesta" "")
+    BACKUP_MODE="$_saved_mode"
+}
+
 # Build repository paths
-# For "both" mode, check if both local and remote exist, then ask user
-if [ "$BACKUP_MODE" = "both" ]; then
+if [ "$RESTORE_SOURCE_FORCE" = "local" ]; then
+    use_local_repos
+    echo "Using local repositories for restore"
+elif [ "$RESTORE_SOURCE_FORCE" = "remote" ]; then
+    if [ -z "$REMOTE_BACKUP_SSH_TARGET" ] && [ -z "$REMOTE_BACKUP_SERVER" ]; then
+        echo "Error: remote backup is not configured in borg.conf"
+        exit 1
+    fi
+    use_remote_repos
+    if ! borg list "$USER_REPO" &>/dev/null 2>&1; then
+        echo "Error: remote user repository is not reachable: $USER_REPO"
+        exit 1
+    fi
+    echo "Using remote repositories for restore"
+elif [ "$BACKUP_MODE" = "both" ]; then
     LOCAL_USER_REPO=$(build_borg_repo_path "user" "$user")
-    REMOTE_BASE="ssh://${REMOTE_BACKUP_SSH_TARGET}:${REMOTE_BACKUP_PORT}${REMOTE_BACKUP_DIR}"
-    REMOTE_USER_REPO="${REMOTE_BASE}/home/$user"
+    _SAVED_BACKUP_MODE="$BACKUP_MODE"
+    BACKUP_MODE="remote"
+    REMOTE_USER_REPO=$(build_borg_repo_path "user" "$user")
+    BACKUP_MODE="$_SAVED_BACKUP_MODE"
     
     LOCAL_EXISTS=0
     REMOTE_EXISTS=0
@@ -132,39 +196,27 @@ if [ "$BACKUP_MODE" = "both" ]; then
         echo ""
         
         if [ "$RESTORE_SOURCE" = "2" ]; then
-            USER_REPO="$REMOTE_USER_REPO"
-            DB_REPO="${REMOTE_BASE}/db/$user"
-            VESTA_REPO="${REMOTE_BASE}/vesta"
+            use_remote_repos
             echo "Using remote repositories for restore"
         else
-            USER_REPO="$LOCAL_USER_REPO"
-            DB_REPO=$(build_borg_repo_path "db" "$user")
-            VESTA_REPO=$(build_borg_repo_path "vesta" "")
+            use_local_repos
             echo "Using local repositories for restore (faster)"
         fi
     elif [ "$LOCAL_HAS_ARCHIVE" -eq 1 ]; then
         # Only local has the archive
-        USER_REPO="$LOCAL_USER_REPO"
-        DB_REPO=$(build_borg_repo_path "db" "$user")
-        VESTA_REPO=$(build_borg_repo_path "vesta" "")
+        use_local_repos
         echo "Using local repositories for restore"
     elif [ "$REMOTE_HAS_ARCHIVE" -eq 1 ]; then
         # Only remote has the archive
-        USER_REPO="$REMOTE_USER_REPO"
-        DB_REPO="${REMOTE_BASE}/db/$user"
-        VESTA_REPO="${REMOTE_BASE}/vesta"
+        use_remote_repos
         echo "Using remote repositories for restore"
     elif [ "$LOCAL_EXISTS" -eq 1 ] || [ "$REMOTE_EXISTS" -eq 1 ]; then
         # Repos exist but archive not found in either - will be handled by archive check below
         # Prefer local if exists, otherwise remote
         if [ "$LOCAL_EXISTS" -eq 1 ]; then
-            USER_REPO="$LOCAL_USER_REPO"
-            DB_REPO=$(build_borg_repo_path "db" "$user")
-            VESTA_REPO=$(build_borg_repo_path "vesta" "")
+            use_local_repos
         else
-            USER_REPO="$REMOTE_USER_REPO"
-            DB_REPO="${REMOTE_BASE}/db/$user"
-            VESTA_REPO="${REMOTE_BASE}/vesta"
+            use_remote_repos
         fi
     else
         echo "Error: No backup repositories found (neither local nor remote)"
@@ -172,9 +224,11 @@ if [ "$BACKUP_MODE" = "both" ]; then
     fi
 else
     # For "local" or "remote" mode, use configured path
-    USER_REPO=$(build_borg_repo_path "user" "$user")
-    DB_REPO=$(build_borg_repo_path "db" "$user")
-    VESTA_REPO=$(build_borg_repo_path "vesta" "")  # Shared repo, no user identifier
+    if [ "$BACKUP_MODE" = "remote" ]; then
+        use_remote_repos
+    else
+        use_local_repos
+    fi
 fi
 
 # Find matching archive

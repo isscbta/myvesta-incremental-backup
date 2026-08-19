@@ -492,7 +492,7 @@ Restore a user from backup. Supports full restore and partial restore of specifi
 
 **Syntax**:
 ```bash
-v-borg-restore-user ARCHIVE USER [WEB] [DNS] [MAIL] [DB]
+v-borg-restore-user ARCHIVE USER [WEB] [DNS] [MAIL] [DB] [--from-local|--from-remote]
 ```
 
 **Arguments**:
@@ -528,33 +528,37 @@ v-borg-restore-user 2025-10-16 admin example.com "" "" shop_db
 
 # Partial restore - all web domains and all databases
 v-borg-restore-user 2025-10-16 admin '*' '' '' '*'
+
+# Non-interactive restore from remote
+v-borg-restore-user 2026-08-19 admin --from-remote
+```
+
+#### Choosing the restore source
+
+- **Default (`BACKUP_MODE="both"`)**: if both local and remote have the archive, an interactive prompt appears (local is the default choice).
+- **`--from-local` / `--from-remote`**: skip the prompt and select the source explicitly (for scripts and automation).
+- **`--from-remote`**: works in any `BACKUP_MODE` when remote credentials are configured in `borg.conf` (disaster recovery on a fresh server with `BACKUP_MODE="local"`).
+
+**Disaster recovery example** (fresh server, local repos lost):
+```bash
+# Restore borg.conf with remote settings, then:
+v-borg-restore-user 2026-08-19_04-00-07 admin --from-remote
 ```
 
 **What it restores**:
 - **Full restore**: myVesta config → User rebuild → Home directory → Web permissions → Databases → Final rebuild
 - **Partial restore**: Only specified components (WEB/DNS/MAIL/DB)
 
-**Restore Source Selection** (for `BACKUP_MODE="both"`):
-- If both local and remote backups exist **and both contain the requested archive**, you'll be prompted:
-  ```
-  ==========================================
-  Both local and remote backups found!
-  ==========================================
-  Archive: 2026-02-04_16-00-07
-  Local:  /backup/borg/home/username
-  Remote: ssh://user@host:23/home/borg/home/username
-  
-  Which backup source would you like to use for restore?
-    1) Local (faster, recommended)
-    2) Remote
-  
-  Enter choice [1/2] (default: 1):
-  ```
-- If only one source has the archive, it will be used automatically
-- If only one repository exists (local or remote), it will be used automatically
-- For `BACKUP_MODE="remote"`: Always uses remote
-- For `BACKUP_MODE="local"`: Always uses local
-- **Recommendation**: Use local for faster restore, use remote to test remote backup integrity or when local backup is corrupted
+When both sources have the archive (default, no flag), the interactive prompt looks like:
+```
+==========================================
+Both local and remote backups found!
+==========================================
+Which backup source would you like to use for restore?
+  1) Local (faster, recommended)
+  2) Remote
+Enter choice [1/2] (default: 1):
+```
 
 **Important Notes**:
 - User must exist before restore
