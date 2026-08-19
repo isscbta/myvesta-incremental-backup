@@ -388,7 +388,7 @@ read -p "Add weekly integrity check to cron (Sunday 6 AM)? [y/N]: " -n 1 -r ADD_
 echo ""
 if [[ "$ADD_CHECKUP_CRON" =~ ^[Yy]$ ]]; then
     CHECKUP_CRON_LINE='0 6 * * 0 /usr/local/vesta/bin/v-borg-checkup >/dev/null 2>&1'
-    (crontab -l 2>/dev/null | grep -v 'v-borg-checkup --verify-data' | grep -v 'v-borg-checkup >/dev/null'; echo "$CHECKUP_CRON_LINE") | crontab -
+    (crontab -l 2>/dev/null | grep -v 'v-borg-checkup >/dev/null'; echo "$CHECKUP_CRON_LINE") | crontab -
     print_success "Weekly integrity check cron added (Sunday 6 AM)"
 else
     echo "   # Add manually: 0 6 * * 0 /usr/local/vesta/bin/v-borg-checkup >/dev/null 2>&1"

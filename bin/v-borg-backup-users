@@ -180,8 +180,12 @@ if [ -n "$NOTIFY_ADMIN_BACKUP" ]; then
             SEND_GLOBAL="yes"
         fi
         if [ "$SEND_GLOBAL" = "yes" ]; then
+            GLOBAL_REPORT_OUTPUT=$(/usr/local/vesta/bin/v-borg-report-global email 2>/dev/null)
+            if echo "$GLOBAL_REPORT_OUTPUT" | head -1 | grep -q '^WARNING:'; then
+                SUBJECT="$SUBJECT | STALE BACKUPS DETECTED"
+            fi
             BODY="${BODY}\n--- Global Report ---\n"
-            BODY="${BODY}$(/usr/local/vesta/bin/v-borg-report-global email 2>/dev/null)\n"
+            BODY="${BODY}${GLOBAL_REPORT_OUTPUT}\n"
         fi
     fi
     
