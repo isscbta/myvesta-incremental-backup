@@ -1,16 +1,25 @@
 #!/bin/bash
 # info: check backup integrity and completeness
-# options: [USER]
+# options: [USER] [--verify-data]
 #
 # This command verifies backup integrity and completeness.
 # If USER is specified, checks only that user. Otherwise checks all users.
+# --verify-data: pass --verify-data to all borg check calls (reads & verifies
+#   actual data chunks; slow but catches silent data corruption).
 
 #----------------------------------------------------------#
 #                Variable & Argument Definition            #
 #----------------------------------------------------------#
 
-# Arguments
-user=$1
+# Arguments - accept USER and --verify-data in any order
+user=""
+VERIFY_DATA_FLAG=""
+for _arg in "$@"; do
+    case "$_arg" in
+        --verify-data) VERIFY_DATA_FLAG="--verify-data" ;;
+        *) user="$_arg" ;;
+    esac
+done
 
 # Source shared functions
 if [ -f "/usr/local/vesta/func/borg.sh" ]; then
@@ -65,7 +74,7 @@ check_user_backup() {
     else
         # Check integrity
         echo "$(get_timestamp) Checking integrity of user repository: $user_repo" | tee -a "$LOG_FILE"
-        if borg check "$user_repo" >> "$LOG_FILE" 2>&1; then
+        if borg check $VERIFY_DATA_FLAG "$user_repo" >> "$LOG_FILE" 2>&1; then
             echo "$(get_timestamp) PASSED: User repository integrity check" | tee -a "$LOG_FILE"
             ((PASSED_CHECKS++))
         else
@@ -93,7 +102,7 @@ check_user_backup() {
         echo "$(get_timestamp) INFO: Database repository does not exist (user may have no databases): $db_repo" | tee -a "$LOG_FILE"
     else
         echo "$(get_timestamp) Checking integrity of database repository: $db_repo" | tee -a "$LOG_FILE"
-        if borg check "$db_repo" >> "$LOG_FILE" 2>&1; then
+        if borg check $VERIFY_DATA_FLAG "$db_repo" >> "$LOG_FILE" 2>&1; then
             echo "$(get_timestamp) PASSED: Database repository integrity check" | tee -a "$LOG_FILE"
             ((PASSED_CHECKS++))
         else

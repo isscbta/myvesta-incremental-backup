@@ -383,6 +383,26 @@ else
     echo "   # Then paste:"
     echo '   0 4 * * * /usr/local/vesta/bin/v-borg-backup-users > /var/log/borg/backup_$(date +\%F).log 2>&1'
 fi
+
+read -p "Add weekly integrity check to cron (Sunday 6 AM)? [y/N]: " -n 1 -r ADD_CHECKUP_CRON
+echo ""
+if [[ "$ADD_CHECKUP_CRON" =~ ^[Yy]$ ]]; then
+    CHECKUP_CRON_LINE='0 6 * * 0 /usr/local/vesta/bin/v-borg-checkup >/dev/null 2>&1'
+    (crontab -l 2>/dev/null | grep -v 'v-borg-checkup --verify-data' | grep -v 'v-borg-checkup >/dev/null'; echo "$CHECKUP_CRON_LINE") | crontab -
+    print_success "Weekly integrity check cron added (Sunday 6 AM)"
+else
+    echo "   # Add manually: 0 6 * * 0 /usr/local/vesta/bin/v-borg-checkup >/dev/null 2>&1"
+fi
+
+read -p "Add monthly deep verification to cron (--verify-data, first Sunday 7 AM)? [y/N]: " -n 1 -r ADD_VERIFY_CRON
+echo ""
+if [[ "$ADD_VERIFY_CRON" =~ ^[Yy]$ ]]; then
+    VERIFY_CRON_LINE='0 7 1-7 * * [ "$(date +\%u)" = "7" ] && /usr/local/vesta/bin/v-borg-checkup --verify-data >/dev/null 2>&1'
+    (crontab -l 2>/dev/null | grep -v 'v-borg-checkup --verify-data'; echo "$VERIFY_CRON_LINE") | crontab -
+    print_success "Monthly deep verification cron added (first Sunday 7 AM)"
+else
+    echo '   # Add manually: 0 7 1-7 * * [ "$(date +\%u)" = "7" ] && /usr/local/vesta/bin/v-borg-checkup --verify-data >/dev/null 2>&1'
+fi
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "📁 Important Paths:"

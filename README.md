@@ -1139,6 +1139,14 @@ v-borg-restore-user ARCHIVE admin
 # Enter choice [1/2] (default: 1):
 ```
 
+#### Protecting the remote copy
+
+`rsync --delete` mirrors the local repo exactly, so local corruption or accidental deletion will overwrite the remote copy on the next run. To protect against this:
+
+- Enable **automatic snapshots** on Hetzner Storage Box (Robot panel → Storage Box → Snapshots → Automatic snapshots). Snapshots let you recover the remote copy even after a bad sync.
+- The backup system already skips rsync for any local repo that fails a `borg list` sanity check and logs an ERROR, but snapshots are the safety net for silent corruption.
+- Recommended: daily snapshots retained for at least 7 days.
+
 **Benefits**:
 - **Local backup**: Fast restore, no network dependency
 - **Remote backup**: Disaster recovery, off-site protection

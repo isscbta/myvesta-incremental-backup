@@ -59,8 +59,9 @@ source_borg_config() {
                 exit 1
             fi
             
-            # Export SSH command with sshpass (port must match REMOTE_BACKUP_PORT)
-            export BORG_RSH="sshpass -p '$REMOTE_BACKUP_PASSWORD' ssh -p $REMOTE_BACKUP_PORT -o StrictHostKeyChecking=no"
+            # Use SSHPASS env var so the password is never visible in the process list
+            export SSHPASS="$REMOTE_BACKUP_PASSWORD"
+            export BORG_RSH="sshpass -e ssh -p $REMOTE_BACKUP_PORT -o StrictHostKeyChecking=no"
         else
             # SSH key authentication (no password)
             export BORG_RSH="ssh -p $REMOTE_BACKUP_PORT -o StrictHostKeyChecking=no"
@@ -84,6 +85,22 @@ check_borg_installed() {
 # Get Borg version
 get_borg_version() {
     borg --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1
+}
+
+# Run borg compact on a repo if borg >= 1.2 (compact was added in 1.2)
+# Usage: compact_repo_if_supported <repo_path>
+compact_repo_if_supported() {
+    local repo_path="$1"
+    local version
+    version=$(get_borg_version)
+    local major minor
+    major=$(echo "$version" | cut -d. -f1)
+    minor=$(echo "$version" | cut -d. -f2)
+    if [ -n "$major" ] && [ -n "$minor" ] && \
+       { [ "$major" -gt 1 ] || { [ "$major" -eq 1 ] && [ "$minor" -ge 2 ]; }; }; then
+        echo "Running borg compact on $repo_path (borg $version)"
+        borg compact "$repo_path" 2>&1
+    fi
 }
 
 #----------------------------------------------------------#
@@ -165,7 +182,7 @@ init_repo_if_needed() {
         
         # Create parent directories on remote server
         if [ -n "$REMOTE_BACKUP_PASSWORD" ]; then
-            sshpass -p "$REMOTE_BACKUP_PASSWORD" ssh -p "$REMOTE_BACKUP_PORT" -o StrictHostKeyChecking=no "$ssh_target" "mkdir -p $parent_dir" 2>&1
+            SSHPASS="$REMOTE_BACKUP_PASSWORD" sshpass -e ssh -p "$REMOTE_BACKUP_PORT" -o StrictHostKeyChecking=no "$ssh_target" "mkdir -p $parent_dir" 2>&1
         else
             ssh -p "$REMOTE_BACKUP_PORT" -o StrictHostKeyChecking=no "$ssh_target" "mkdir -p $parent_dir" 2>&1
         fi

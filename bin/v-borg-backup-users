@@ -30,6 +30,14 @@ check_borg_installed
 source_borg_config
 ensure_log_dir
 
+LOCK_FILE="/var/run/v-borg-backup.lock"
+exec 200>"$LOCK_FILE"
+if ! flock -n 200; then
+    echo "Error: Another backup run is already in progress (lock: $LOCK_FILE)"
+    log_event "SKIP" "Backup run skipped, another instance is running"
+    exit 3
+fi
+
 #----------------------------------------------------------#
 #                    Main Execution                        #
 #----------------------------------------------------------#
