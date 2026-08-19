@@ -1,11 +1,11 @@
 #!/bin/bash
 # info: update borg backup system to latest version
-# options: [--config]
+# options: [--config] [--version TAG]
 #
 # Updates Borg backup scripts and function library from GitHub.
 # Preserves your borg.conf by default. Use --config to also update config (backup created first).
 #
-# Usage: v-borg-update [--config]
+# Usage: v-borg-update [--config] [--version TAG]
 
 #----------------------------------------------------------#
 #                Color Definitions                         #
@@ -44,9 +44,7 @@ print_header() {
 #                Configuration                             #
 #----------------------------------------------------------#
 
-GITHUB_RAW_URL="https://raw.githubusercontent.com/isscbta/myvesta-incremental-backup/main"
-CONF_URL="${GITHUB_RAW_URL}/conf/borg.conf"
-FUNC_URL="${GITHUB_RAW_URL}/func/borg.sh"
+GITHUB_REPO="isscbta/myvesta-incremental-backup"
 
 SCRIPTS=(
     "v-borg-backup-system"
@@ -61,6 +59,7 @@ SCRIPTS=(
     "v-borg-checkup"
     "v-borg-restore-checkup"
     "v-borg-backup-prune"
+    "v-borg-install"
     "v-borg-update"
 )
 
@@ -84,12 +83,40 @@ if [ ! -f "/usr/local/vesta/func/borg.sh" ]; then
 fi
 
 UPDATE_CONFIG="no"
-for arg in "$@"; do
-    if [ "$arg" = "--config" ] || [ "$arg" = "-c" ]; then
-        UPDATE_CONFIG="yes"
-        break
-    fi
+REF=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --config|-c)
+            UPDATE_CONFIG="yes"
+            shift
+            ;;
+        --version|-v)
+            if [ -z "${2:-}" ]; then
+                print_error "--version requires a tag argument"
+                exit 1
+            fi
+            REF="$2"
+            shift 2
+            ;;
+        *)
+            print_error "Unknown option: $1"
+            echo "Usage: v-borg-update [--config] [--version TAG]"
+            exit 1
+            ;;
+    esac
 done
+
+# Resolve ref: explicit tag > latest GitHub release > main
+if [ -z "$REF" ]; then
+    API_URL="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
+    REF=$(wget -qO- "$API_URL" 2>/dev/null | grep -o '"tag_name": *"[^"]*"' | head -1 | cut -d'"' -f4)
+    if [ -z "$REF" ]; then
+        REF="main"
+        print_info "No release tag found, updating from main branch"
+    fi
+fi
+
+GITHUB_RAW_URL="https://raw.githubusercontent.com/${GITHUB_REPO}/${REF}"
 
 #----------------------------------------------------------#
 #                Update                                    #
@@ -97,35 +124,115 @@ done
 
 print_header "myVesta Borg Backup - Update"
 
-print_info "Downloading from: $GITHUB_RAW_URL"
+print_info "Updating to: $REF"
+print_info "Source: $GITHUB_RAW_URL"
 echo ""
 
-# Function library
-print_info "Updating func/borg.sh..."
-if wget -q -O /usr/local/vesta/func/borg.sh "$FUNC_URL" 2>/dev/null; then
-    chmod 644 /usr/local/vesta/func/borg.sh
-    print_success "func/borg.sh updated"
-else
+STAGING_DIR=$(mktemp -d /tmp/v-borg-update.XXXXXX)
+trap 'rm -rf "$STAGING_DIR"' EXIT
+
+#----------------------------------------------------------#
+#                Phase 1: Download to staging              #
+#----------------------------------------------------------#
+
+print_header "Phase 1: Downloading"
+
+print_info "Downloading borg.sh..."
+if ! wget -q -O "$STAGING_DIR/borg.sh" "${GITHUB_RAW_URL}/func/borg.sh" 2>/dev/null; then
     print_error "Failed to download borg.sh"
+    print_error "No changes were made to installed files"
     exit 1
 fi
-
-# Bin scripts
-print_header "Updating Scripts"
+print_success "borg.sh downloaded"
 
 for script in "${SCRIPTS[@]}"; do
-    SCRIPT_URL="${GITHUB_RAW_URL}/bin/${script}"
-    print_info "Updating ${script}..."
-    
-    if wget -q -O "/usr/local/vesta/bin/$script" "$SCRIPT_URL" 2>/dev/null; then
-        chmod 755 "/usr/local/vesta/bin/$script"
-        print_success "  $script"
-    else
-        print_error "  Failed: $script"
+    print_info "Downloading ${script}..."
+    if ! wget -q -O "$STAGING_DIR/$script" "${GITHUB_RAW_URL}/bin/${script}" 2>/dev/null; then
+        print_error "Failed to download: $script"
+        print_error "No changes were made to installed files"
+        exit 1
     fi
+    print_success "  $script downloaded"
 done
 
-# Config (optional)
+if [ "$UPDATE_CONFIG" = "yes" ]; then
+    print_info "Downloading borg.conf..."
+    if ! wget -q -O "$STAGING_DIR/borg.conf" "${GITHUB_RAW_URL}/conf/borg.conf" 2>/dev/null; then
+        print_error "Failed to download borg.conf"
+        print_error "No changes were made to installed files"
+        exit 1
+    fi
+    print_success "borg.conf downloaded"
+fi
+
+#----------------------------------------------------------#
+#                Phase 2: Verify staged files              #
+#----------------------------------------------------------#
+
+print_header "Phase 2: Verifying"
+
+verify_staged_file() {
+    local file="$1"
+    local label="$2"
+    local check_shebang="${3:-no}"
+
+    if [ ! -s "$file" ]; then
+        print_error "Verify failed ($label): file is missing or empty"
+        return 1
+    fi
+    if ! bash -n "$file" 2>/dev/null; then
+        print_error "Verify failed ($label): bash -n syntax check failed"
+        return 1
+    fi
+    if [ "$check_shebang" = "yes" ]; then
+        local shebang
+        shebang=$(head -c 2 "$file" 2>/dev/null)
+        if [ "$shebang" != "#!" ]; then
+            print_error "Verify failed ($label): missing shebang (possible HTML error page)"
+            return 1
+        fi
+    fi
+    return 0
+}
+
+if ! verify_staged_file "$STAGING_DIR/borg.sh" "borg.sh" "no"; then
+    print_error "No changes were made to installed files"
+    exit 1
+fi
+print_success "borg.sh verified"
+
+for script in "${SCRIPTS[@]}"; do
+    if ! verify_staged_file "$STAGING_DIR/$script" "$script" "yes"; then
+        print_error "No changes were made to installed files"
+        exit 1
+    fi
+    print_success "  $script verified"
+done
+
+if [ "$UPDATE_CONFIG" = "yes" ]; then
+    if ! verify_staged_file "$STAGING_DIR/borg.conf" "borg.conf" "no"; then
+        print_error "No changes were made to installed files"
+        exit 1
+    fi
+    print_success "borg.conf verified"
+fi
+
+#----------------------------------------------------------#
+#                Phase 3: Install                          #
+#----------------------------------------------------------#
+
+print_header "Phase 3: Installing"
+
+print_info "Installing borg.sh..."
+install -m 644 "$STAGING_DIR/borg.sh" "/usr/local/vesta/func/borg.sh"
+print_success "func/borg.sh installed"
+
+for script in "${SCRIPTS[@]}"; do
+    print_info "Installing ${script}..."
+    install -m 755 "$STAGING_DIR/$script" "/usr/local/vesta/bin/$script"
+    print_success "  $script installed"
+done
+
 if [ "$UPDATE_CONFIG" = "yes" ]; then
     print_header "Updating Configuration"
     if [ -f "/usr/local/vesta/conf/borg.conf" ]; then
@@ -133,13 +240,9 @@ if [ "$UPDATE_CONFIG" = "yes" ]; then
         cp /usr/local/vesta/conf/borg.conf "$BACKUP_FILE"
         print_success "Backup created: $BACKUP_FILE"
     fi
-    if wget -q -O /usr/local/vesta/conf/borg.conf "$CONF_URL" 2>/dev/null; then
-        chmod 600 /usr/local/vesta/conf/borg.conf
-        chown root:root /usr/local/vesta/conf/borg.conf
-        print_success "borg.conf updated (restore from backup if needed)"
-    else
-        print_error "Failed to download borg.conf"
-    fi
+    print_info "Installing borg.conf..."
+    install -m 600 -o root -g root "$STAGING_DIR/borg.conf" "/usr/local/vesta/conf/borg.conf"
+    print_success "borg.conf installed (restore from backup if needed)"
 else
     print_info "Config preserved (use --config to update borg.conf)"
 fi
@@ -149,5 +252,5 @@ fi
 #----------------------------------------------------------#
 
 print_header "Update Complete!"
-print_success "Scripts and function library updated."
+print_success "Scripts and function library updated to: $REF"
 echo ""
