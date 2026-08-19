@@ -97,6 +97,22 @@ init_repo_if_needed "$USER_REPO" >> "$LOG_FILE" 2>&1
 init_repo_if_needed "$DB_REPO" >> "$LOG_FILE" 2>&1
 init_repo_if_needed "$VESTA_REPO" >> "$LOG_FILE" 2>&1
 
+# Remote repos for both+borg (independent backup, not rsync mirror)
+if [ "$BACKUP_MODE" = "both" ] && [ "$REMOTE_SYNC_METHOD" = "borg" ]; then
+    _SAVED_BACKUP_MODE="$BACKUP_MODE"
+    BACKUP_MODE="remote"
+    REMOTE_USER_REPO=$(build_borg_repo_path "user" "$user")
+    REMOTE_DB_REPO=$(build_borg_repo_path "db" "$user")
+    REMOTE_VESTA_REPO=$(build_borg_repo_path "vesta" "")
+    BACKUP_MODE="$_SAVED_BACKUP_MODE"
+    echo "$(get_timestamp) Remote user repository: $REMOTE_USER_REPO" | tee -a "$LOG_FILE"
+    echo "$(get_timestamp) Remote DB repository: $REMOTE_DB_REPO" | tee -a "$LOG_FILE"
+    echo "$(get_timestamp) Remote vesta repository: $REMOTE_VESTA_REPO" | tee -a "$LOG_FILE"
+    init_repo_if_needed "$REMOTE_USER_REPO" >> "$LOG_FILE" 2>&1
+    init_repo_if_needed "$REMOTE_DB_REPO" >> "$LOG_FILE" 2>&1
+    init_repo_if_needed "$REMOTE_VESTA_REPO" >> "$LOG_FILE" 2>&1
+fi
+
 #----------------------------------------------------------#
 #                Backup User Home Directory                #
 #----------------------------------------------------------#
@@ -180,6 +196,45 @@ if [ -n "$DATABASES" ]; then
         DB_ARCHIVE_NAME="$database-$ARCHIVE_DATE"
         echo "$(get_timestamp) Backing up database: $database" | tee -a "$LOG_FILE"
         
+        if [ "$BACKUP_MODE" = "both" ] && [ "$REMOTE_SYNC_METHOD" = "borg" ]; then
+            DUMP_TMP_DIR="$BACKUP_DIR/tmp"
+            mkdir -p "$DUMP_TMP_DIR"
+            DUMP_FILE=$(mktemp "$DUMP_TMP_DIR/${database}.XXXXXX.sql")
+            
+            mysqldump "$database" --opt --routines --skip-comments --single-transaction --quick > "$DUMP_FILE" 2>>"$LOG_FILE"
+            DUMP_EXIT=$?
+            if [ "$DUMP_EXIT" -ne 0 ]; then
+                echo "$(get_timestamp) Error: mysqldump failed for database $database (exit $DUMP_EXIT)" | tee -a "$LOG_FILE"
+                BACKUP_FAILED=1
+                rm -f "$DUMP_FILE"
+                continue
+            fi
+            
+            borg create $OPTIONS_CREATE "$DB_REPO::$DB_ARCHIVE_NAME" - < "$DUMP_FILE" 2>&1 | tee -a "$LOG_FILE"
+            BORG_EXIT=${PIPESTATUS[0]}
+            if [ "$BORG_EXIT" -eq 0 ]; then
+                echo "$(get_timestamp) Database $database backed up successfully" | tee -a "$LOG_FILE"
+                ((DB_COUNT++))
+                borg prune $OPTIONS_PRUNE --prefix "$database-" "$DB_REPO" 2>&1 | tee -a "$LOG_FILE"
+                compact_repo_if_supported "$DB_REPO" >> "$LOG_FILE" 2>&1
+            else
+                echo "$(get_timestamp) Error: borg create failed for database $database (exit $BORG_EXIT)" | tee -a "$LOG_FILE"
+                BACKUP_FAILED=1
+            fi
+            
+            borg create $OPTIONS_CREATE "$REMOTE_DB_REPO::$DB_ARCHIVE_NAME" - < "$DUMP_FILE" 2>&1 | tee -a "$LOG_FILE"
+            REMOTE_BORG_EXIT=${PIPESTATUS[0]}
+            if [ "$REMOTE_BORG_EXIT" -eq 0 ]; then
+                echo "$(get_timestamp) Database $database remote backup completed successfully" | tee -a "$LOG_FILE"
+                borg prune $OPTIONS_PRUNE --prefix "$database-" "$REMOTE_DB_REPO" 2>&1 | tee -a "$LOG_FILE"
+                compact_repo_if_supported "$REMOTE_DB_REPO" >> "$LOG_FILE" 2>&1
+            else
+                echo "$(get_timestamp) ERROR: remote borg create failed for database $database (exit $REMOTE_BORG_EXIT)" | tee -a "$LOG_FILE"
+                SYNC_FAILED=1
+            fi
+            
+            rm -f "$DUMP_FILE"
+        else
         # Dump database and pipe directly to borg
         # --single-transaction for InnoDB consistency; --quick avoids buffering full result set
         mysqldump "$database" --opt --routines --skip-comments --single-transaction --quick 2>>"$LOG_FILE" | \
@@ -204,6 +259,7 @@ if [ -n "$DATABASES" ]; then
             # Prune old database archives (keep only archives for this specific database)
             borg prune $OPTIONS_PRUNE --prefix "$database-" "$DB_REPO" 2>&1 | tee -a "$LOG_FILE"
             compact_repo_if_supported "$DB_REPO" >> "$LOG_FILE" 2>&1
+        fi
         fi
     done <<< "$DATABASES"
     
@@ -234,10 +290,10 @@ echo "$(get_timestamp) Runtime: $RUNTIME_MIN minute(s)" | tee -a "$LOG_FILE"
 #                Sync to Remote (if both mode)              #
 #----------------------------------------------------------#
 
-if [ "$BACKUP_MODE" = "both" ] && [ -z "$BACKUP_FAILED" ]; then
-    echo "$(get_timestamp) ========== SYNCING TO REMOTE SERVER ==========" | tee -a "$LOG_FILE"
-    
-    if [ "$REMOTE_SYNC_METHOD" = "rsync" ]; then
+if [ "$BACKUP_MODE" = "both" ]; then
+    if [ "$REMOTE_SYNC_METHOD" = "rsync" ] && [ -z "$BACKUP_FAILED" ]; then
+        echo "$(get_timestamp) ========== SYNCING TO REMOTE SERVER ==========" | tee -a "$LOG_FILE"
+        
         # Create remote directory structure (required for rsync - some SFTP/Storage Box don't create nested dirs)
         echo "$(get_timestamp) Ensuring remote directories exist..." | tee -a "$LOG_FILE"
         REMOTE_MKDIR_CMD="mkdir -p ${REMOTE_BACKUP_DIR}/home/$user ${REMOTE_BACKUP_DIR}/db/$user ${REMOTE_BACKUP_DIR}/vesta"
@@ -309,9 +365,44 @@ if [ "$BACKUP_MODE" = "both" ] && [ -z "$BACKUP_FAILED" ]; then
                 SYNC_FAILED=1
             fi
         fi
-    else
-        # REMOTE_SYNC_METHOD="borg" - create separate remote repos (not implemented yet)
-        echo "$(get_timestamp) Borg sync method not yet implemented, skipping remote sync" | tee -a "$LOG_FILE"
+    elif [ "$REMOTE_SYNC_METHOD" = "borg" ]; then
+        echo "$(get_timestamp) ========== REMOTE BACKUP (INDEPENDENT BORG) ==========" | tee -a "$LOG_FILE"
+        
+        echo "$(get_timestamp) Creating remote archive: $REMOTE_USER_REPO::$ARCHIVE_NAME" | tee -a "$LOG_FILE"
+        eval borg create \
+            $OPTIONS_CREATE \
+            $EXCLUDE_ARGS \
+            "$REMOTE_USER_REPO::$ARCHIVE_NAME" \
+            "$HOME_DIR/$user" \
+            2>&1 | tee -a "$LOG_FILE"
+        REMOTE_BORG_EXIT=${PIPESTATUS[0]}
+        if [ "$REMOTE_BORG_EXIT" -eq 0 ]; then
+            echo "$(get_timestamp) Remote home backup completed successfully" | tee -a "$LOG_FILE"
+            echo "$(get_timestamp) Pruning remote home archives..." | tee -a "$LOG_FILE"
+            borg prune $OPTIONS_PRUNE "$REMOTE_USER_REPO" 2>&1 | tee -a "$LOG_FILE"
+            compact_repo_if_supported "$REMOTE_USER_REPO" >> "$LOG_FILE" 2>&1
+        else
+            echo "$(get_timestamp) ERROR: Remote home backup failed" | tee -a "$LOG_FILE"
+            SYNC_FAILED=1
+        fi
+        
+        if [ -d "$VESTA_USER_DIR" ]; then
+            echo "$(get_timestamp) Creating remote archive: $REMOTE_VESTA_REPO::$VESTA_ARCHIVE_NAME" | tee -a "$LOG_FILE"
+            borg create \
+                $OPTIONS_CREATE \
+                "$REMOTE_VESTA_REPO::$VESTA_ARCHIVE_NAME" \
+                "$VESTA_USER_DIR" \
+                2>&1 | tee -a "$LOG_FILE"
+            REMOTE_BORG_EXIT=${PIPESTATUS[0]}
+            if [ "$REMOTE_BORG_EXIT" -eq 0 ]; then
+                echo "$(get_timestamp) Remote myVesta config backup completed successfully" | tee -a "$LOG_FILE"
+                borg prune $OPTIONS_PRUNE "$REMOTE_VESTA_REPO" 2>&1 | tee -a "$LOG_FILE"
+                compact_repo_if_supported "$REMOTE_VESTA_REPO" >> "$LOG_FILE" 2>&1
+            else
+                echo "$(get_timestamp) ERROR: Remote myVesta config backup failed" | tee -a "$LOG_FILE"
+                SYNC_FAILED=1
+            fi
+        fi
     fi
 fi
 

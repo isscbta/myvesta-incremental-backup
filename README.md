@@ -175,12 +175,25 @@ BACKUP_MODE="local"
 
 **Both Mode** (`BACKUP_MODE="both"`):
 - Creates local backup first (fast)
-- Then syncs to remote server using rsync
+- Then maintains a remote copy via `REMOTE_SYNC_METHOD` (rsync mirror or independent borg backup)
 - Provides redundancy: local (fast restore) + remote (disaster recovery)
 - Best for critical data requiring both speed and safety
 - **Restore behavior**: If both local and remote backups exist, you'll be prompted to choose which source to use
 
-#### Remote Backup Settings
+#### Remote sync methods (both mode)
+
+| | `rsync` (default) | `borg` |
+|---|---|---|
+| How it works | mirrors local repos to remote | second independent backup directly to remote |
+| Backup window | fast (data read once) | roughly doubled (data read twice) |
+| Local corruption | propagates on next sync | cannot propagate |
+| Remote requirements | snapshot support recommended | none; append-only supported |
+| Restore source | remote is a copy of local | two independent histories |
+
+**Use `rsync`** when the remote has snapshots (e.g. Hetzner Storage Box) and backup windows are tight.
+**Use `borg`** when the remote has no snapshots, or when you want maximum protection (combine with `borg serve --append-only`).
+
+#### Remote backup settings
 
 ```bash
 # Remote backup SSH identity (BACKUP_MODE remote or both)
@@ -201,9 +214,9 @@ REMOTE_BACKUP_DIR="/home/borg"
 # For SSH key authentication (recommended), leave empty and setup SSH keys
 REMOTE_BACKUP_PASSWORD=""
 
-# For "both" mode: sync method
-# rsync = use rsync to mirror local backup to remote
-# borg  = create separate remote borg repos
+# How "both" mode maintains the remote copy (see table above):
+# rsync = mirror local repos to remote
+# borg  = second independent borg backup directly to remote
 REMOTE_SYNC_METHOD="rsync"
 ```
 
@@ -1141,11 +1154,12 @@ v-borg-restore-user ARCHIVE admin
 
 #### Protecting the remote copy
 
-`rsync --delete` mirrors the local repo exactly, so local corruption or accidental deletion will overwrite the remote copy on the next run. To protect against this:
+When using `REMOTE_SYNC_METHOD="rsync"`, `rsync --delete` mirrors the local repo exactly, so local corruption or accidental deletion will overwrite the remote copy on the next run. To protect against this:
 
 - Enable **automatic snapshots** on Hetzner Storage Box (Robot panel → Storage Box → Snapshots → Automatic snapshots). Snapshots let you recover the remote copy even after a bad sync.
 - The backup system already skips rsync for any local repo that fails a `borg list` sanity check and logs an ERROR, but snapshots are the safety net for silent corruption.
 - Recommended: daily snapshots retained for at least 7 days.
+- If snapshots are unavailable, set `REMOTE_SYNC_METHOD="borg"` for a fully independent remote history (see **Remote sync methods (both mode)** above).
 
 **Benefits**:
 - **Local backup**: Fast restore, no network dependency
