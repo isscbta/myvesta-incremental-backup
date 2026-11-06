@@ -1008,25 +1008,93 @@ get_disk_usage() {
     }'
 }
 
-# Get repository size using borg info
+# Human label for BACKUP_MODE (local / remote / both).
+# Usage: get_backup_location_label
+get_backup_location_label() {
+    case "${BACKUP_MODE:-local}" in
+        remote) echo "remote" ;;
+        both)   echo "both" ;;
+        *)      echo "local" ;;
+    esac
+}
+
+# Detailed where-backups-live string for status/reports.
+# Usage: get_backup_location_detail
+get_backup_location_detail() {
+    local remote_desc=""
+    if [ -n "${REMOTE_BACKUP_SSH_TARGET:-}" ] && [ -n "${REMOTE_BACKUP_DIR:-}" ]; then
+        remote_desc="${REMOTE_BACKUP_SSH_TARGET}:${REMOTE_BACKUP_PORT:-22}${REMOTE_BACKUP_DIR}"
+    elif [ -n "${REMOTE_BACKUP_SERVER:-}" ]; then
+        remote_desc="${REMOTE_BACKUP_SERVER}:${REMOTE_BACKUP_PORT:-22}${REMOTE_BACKUP_DIR:-}"
+    else
+        remote_desc="(remote not configured)"
+    fi
+
+    case "${BACKUP_MODE:-local}" in
+        remote)
+            echo "Remote only — $remote_desc"
+            ;;
+        both)
+            echo "Local + remote — local: ${BACKUP_DIR:-/backup/borg} | remote: $remote_desc (sync: ${REMOTE_SYNC_METHOD:-rsync})"
+            ;;
+        *)
+            echo "Local only — ${BACKUP_DIR:-/backup/borg}"
+            ;;
+    esac
+}
+
+# Build repo path for an explicit mode without permanently changing BACKUP_MODE.
+# Usage: build_borg_repo_path_mode <mode> <repo_type> <identifier>
+build_borg_repo_path_mode() {
+    local mode="$1"
+    local repo_type="$2"
+    local identifier="$3"
+    local _saved_mode="${BACKUP_MODE:-local}"
+    BACKUP_MODE="$mode"
+    build_borg_repo_path "$repo_type" "$identifier"
+    BACKUP_MODE="$_saved_mode"
+}
+
+# Get repository on-disk size via borg info (works for local and ssh:// remote).
+# Returns unique compressed size in bytes (deduplicated footprint), or 0.
 # Usage: get_repo_size <repo_path>
-# Returns: size in bytes (or 0 if repo doesn't exist)
 get_repo_size() {
     local repo_path="$1"
-    
-    if ! borg list "$repo_path" &>/dev/null; then
+    local size=""
+
+    if [ -z "$repo_path" ]; then
         echo "0"
         return 0
     fi
-    
-    # Get repository size from borg info
-    local size=$(borg info "$repo_path" 2>/dev/null | grep "All archives" | awk '{print $3}' | sed 's/[^0-9]//g')
-    
-    if [ -z "$size" ]; then
-        echo "0"
-    else
-        echo "$size"
+
+    # unique_csize = actual deduplicated bytes stored (best "usage" metric)
+    if command -v python3 >/dev/null 2>&1; then
+        size=$(borg info --json "$repo_path" 2>/dev/null | python3 -c '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(int(d.get("cache", {}).get("stats", {}).get("unique_csize", 0) or 0))
+except Exception:
+    print(0)
+' 2>/dev/null)
     fi
+
+    if [ -n "$size" ] && [ "$size" -ge 0 ] 2>/dev/null; then
+        echo "$size"
+        return 0
+    fi
+
+    # Fallback: parse "All archives" deduplicated column from human output
+    # Example: All archives:  99.94 GB  59.22 GB  27.48 GB
+    local line dedup unit
+    line=$(borg info "$repo_path" 2>/dev/null | grep "All archives:" | tail -n 1)
+    if [ -n "$line" ]; then
+        dedup=$(echo "$line" | awk '{print $(NF-1)}')
+        unit=$(echo "$line" | awk '{print $NF}')
+        size=$(numfmt --from=iec "${dedup}${unit}" 2>/dev/null || echo "0")
+    fi
+
+    echo "${size:-0}"
 }
 
 # Format disk usage for display

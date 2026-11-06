@@ -41,20 +41,23 @@ REPORT_DATE=$(date '+%Y-%m-%d')
 REPORT_TIME=$(date '+%H:%M:%S')
 HOSTNAME=$(hostname)
 
-# Disk Space Information
-DISK_USAGE=$(get_disk_usage "$BACKUP_DIR")
+BACKUP_LOCATION_LABEL=$(get_backup_location_label)
+BACKUP_LOCATION_DETAIL=$(get_backup_location_detail)
+
+# Server disk (this host — not Storage Box capacity)
+DISK_USAGE=$(get_disk_usage "${BACKUP_DIR:-/}")
 DISK_TOTAL=$(echo "$DISK_USAGE" | awk '{print $1}')
 DISK_USED=$(echo "$DISK_USAGE" | awk '{print $2}')
 DISK_AVAIL=$(echo "$DISK_USAGE" | awk '{print $3}')
 DISK_PERCENT=$(echo "$DISK_USAGE" | awk '{print $4}')
-DISK_WARNING=$(check_disk_space_warning "$BACKUP_DIR")
+DISK_WARNING=$(check_disk_space_warning "${BACKUP_DIR:-/}")
 
-# Per-repository sizes
-REPO_HOME_SIZE=$(du -sb "$REPO_USERS_DIR" 2>/dev/null | awk '{print $1}' || echo "0")
-REPO_DB_SIZE=$(du -sb "$REPO_DB_DIR" 2>/dev/null | awk '{print $1}' || echo "0")
-REPO_VESTA_SIZE=$(du -sb "$REPO_VESTA_DIR" 2>/dev/null | awk '{print $1}' || echo "0")
-REPO_ETC_SIZE=$(du -sb "$REPO_ETC" 2>/dev/null | awk '{print $1}' || echo "0")
-REPO_SCRIPTS_SIZE=$(du -sb "$REPO_SCRIPTS" 2>/dev/null | awk '{print $1}' || echo "0")
+# Aggregate repo sizes (borg info for remote/local paths — not naive du on empty local dirs)
+REPO_HOME_SIZE=0
+REPO_DB_SIZE=0
+REPO_VESTA_SIZE=$(get_repo_size "$(build_borg_repo_path "vesta" "")")
+REPO_ETC_SIZE=$(get_repo_size "$(build_borg_repo_path "etc" "")")
+REPO_SCRIPTS_SIZE=$(get_repo_size "$(build_borg_repo_path "scripts" "")")
 
 # Backup Statistics
 TOTAL_USERS=0
@@ -73,6 +76,7 @@ for user in $USERS; do
     ((TOTAL_USERS++))
     
     USER_REPO=$(build_borg_repo_path "user" "$user")
+    DB_REPO=$(build_borg_repo_path "db" "$user")
     LAST_BACKUP=$(get_last_backup_date "$user")
     
     # Staleness check
@@ -97,6 +101,8 @@ for user in $USERS; do
         ((USERS_WITH_BACKUPS++))
         USER_ARCHIVES=$(borg list "$USER_REPO" 2>/dev/null | wc -l)
         TOTAL_ARCHIVES=$((TOTAL_ARCHIVES + USER_ARCHIVES))
+        REPO_HOME_SIZE=$((REPO_HOME_SIZE + $(get_repo_size "$USER_REPO")))
+        REPO_DB_SIZE=$((REPO_DB_SIZE + $(get_repo_size "$DB_REPO")))
         
         # Check repo health
         if [ "$(check_repo_health "$USER_REPO")" != "ok" ]; then
@@ -134,15 +140,19 @@ ${STALE_SUBJECT_TAG}Borg Backup System Report
 Date: $REPORT_DATE $REPORT_TIME
 Server: $HOSTNAME
 
-=== Disk Space ===
-Backup Directory: $BACKUP_DIR
+=== Backup Location ===
+Mode: $BACKUP_LOCATION_LABEL
+Detail: $BACKUP_LOCATION_DETAIL
+
+=== Server Disk (this host) ===
+Path: $BACKUP_DIR
 Total: $(format_size $DISK_TOTAL)
 Used: $(format_size $DISK_USED)
 Available: $(format_size $DISK_AVAIL)
 Usage: $DISK_PERCENT%
 Status: $DISK_WARNING
 
-Per-Repository Breakdown:
+=== Backup Storage (borg deduplicated) ===
   Home Repositories:  $(format_size $REPO_HOME_SIZE)
   Database Repos:     $(format_size $REPO_DB_SIZE)
   Vesta Config:       $(format_size $REPO_VESTA_SIZE)
@@ -183,7 +193,10 @@ EOF
         echo "  \"report_date\": \"$REPORT_DATE\","
         echo "  \"report_time\": \"$REPORT_TIME\","
         echo "  \"hostname\": \"$HOSTNAME\","
-        echo "  \"disk_space\": {"
+        echo "  \"backup_mode\": \"$BACKUP_MODE\","
+        echo "  \"backup_location\": \"$BACKUP_LOCATION_LABEL\","
+        echo "  \"backup_location_detail\": \"$BACKUP_LOCATION_DETAIL\","
+        echo "  \"server_disk\": {"
         echo "    \"path\": \"$BACKUP_DIR\","
         echo "    \"total\": $DISK_TOTAL,"
         echo "    \"used\": $DISK_USED,"
@@ -222,20 +235,24 @@ EOF
         echo "Server: $HOSTNAME"
         echo "========================================"
         echo ""
-        echo "=== Disk Space ==="
-        echo "Backup Directory: $BACKUP_DIR"
-        echo "Total:            $(format_size $DISK_TOTAL)"
-        echo "Used:             $(format_size $DISK_USED)"
-        echo "Available:        $(format_size $DISK_AVAIL)"
-        echo "Usage:            $DISK_PERCENT%"
-        echo "Status:           $DISK_WARNING"
+        echo "=== Backup Location ==="
+        echo "Mode:               $BACKUP_LOCATION_LABEL"
+        echo "Detail:             $BACKUP_LOCATION_DETAIL"
         echo ""
-        echo "Per-Repository Breakdown:"
+        echo "=== Server Disk (this host) ==="
+        echo "Path:               $BACKUP_DIR"
+        echo "Total:              $(format_size $DISK_TOTAL)"
+        echo "Used:               $(format_size $DISK_USED)"
+        echo "Available:          $(format_size $DISK_AVAIL)"
+        echo "Usage:              $DISK_PERCENT%"
+        echo "Status:             $DISK_WARNING"
+        echo ""
+        echo "=== Backup Storage (borg deduplicated) ==="
         echo "  Home Repositories:  $(format_size $REPO_HOME_SIZE)"
         echo "  Database Repos:     $(format_size $REPO_DB_SIZE)"
         echo "  Vesta Config:       $(format_size $REPO_VESTA_SIZE)"
-        echo "  System (/etc):       $(format_size $REPO_ETC_SIZE)"
-        echo "  Scripts:             $(format_size $REPO_SCRIPTS_SIZE)"
+        echo "  System (/etc):      $(format_size $REPO_ETC_SIZE)"
+        echo "  Scripts:            $(format_size $REPO_SCRIPTS_SIZE)"
         echo ""
         echo "=== Backup Statistics ==="
         echo "Total Users:          $TOTAL_USERS"

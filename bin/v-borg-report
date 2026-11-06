@@ -54,6 +54,9 @@ load_user_borg_config "$user" 2>/dev/null
 #                Gather Report Data                        #
 #----------------------------------------------------------#
 
+BACKUP_LOCATION_LABEL=$(get_backup_location_label)
+BACKUP_LOCATION_DETAIL=$(get_backup_location_detail)
+
 USER_REPO=$(build_borg_repo_path "user" "$user")
 DB_REPO=$(build_borg_repo_path "db" "$user")
 
@@ -61,6 +64,23 @@ LAST_BACKUP=$(get_last_backup_date "$user")
 BACKUP_COUNT=$(get_backup_count "$user")
 USER_REPO_SIZE=$(get_repo_size "$USER_REPO")
 DB_REPO_SIZE=$(get_repo_size "$DB_REPO")
+
+LOCAL_USER_REPO_SIZE=0
+LOCAL_DB_REPO_SIZE=0
+REMOTE_USER_REPO_SIZE=0
+REMOTE_DB_REPO_SIZE=0
+if [ "$BACKUP_MODE" = "both" ]; then
+    LOCAL_USER_REPO_SIZE=$(get_repo_size "$(build_borg_repo_path_mode local user "$user")")
+    LOCAL_DB_REPO_SIZE=$(get_repo_size "$(build_borg_repo_path_mode local db "$user")")
+    REMOTE_USER_REPO_SIZE=$(get_repo_size "$(build_borg_repo_path_mode remote user "$user")")
+    REMOTE_DB_REPO_SIZE=$(get_repo_size "$(build_borg_repo_path_mode remote db "$user")")
+elif [ "$BACKUP_MODE" = "remote" ]; then
+    REMOTE_USER_REPO_SIZE=$USER_REPO_SIZE
+    REMOTE_DB_REPO_SIZE=$DB_REPO_SIZE
+else
+    LOCAL_USER_REPO_SIZE=$USER_REPO_SIZE
+    LOCAL_DB_REPO_SIZE=$DB_REPO_SIZE
+fi
 
 # Get recent backups (last 7 days)
 RECENT_BACKUPS=""
@@ -78,10 +98,10 @@ if [ "$LAST_BACKUP" != "never" ]; then
     fi
 fi
 
-# Get disk usage
-DISK_USAGE=$(get_disk_usage "$BACKUP_DIR")
+# Server disk (this host)
+DISK_USAGE=$(get_disk_usage "${BACKUP_DIR:-/}")
 DISK_PERCENT=$(echo "$DISK_USAGE" | awk '{print $4}')
-DISK_WARNING=$(check_disk_space_warning "$BACKUP_DIR")
+DISK_WARNING=$(check_disk_space_warning "${BACKUP_DIR:-/}")
 
 # Warnings
 WARNINGS=""
@@ -91,10 +111,13 @@ elif [ "$DAYS_SINCE_BACKUP" != "N/A" ] && [ "$DAYS_SINCE_BACKUP" -gt 7 ]; then
     WARNINGS="${WARNINGS}Last backup was $DAYS_SINCE_BACKUP days ago. "
 fi
 
-if [ "$DISK_WARNING" = "critical" ]; then
-    WARNINGS="${WARNINGS}CRITICAL: Disk space usage is ${DISK_PERCENT}%. "
-elif [ "$DISK_WARNING" = "warning" ]; then
-    WARNINGS="${WARNINGS}WARNING: Disk space usage is ${DISK_PERCENT}%. "
+# Disk warnings only matter when backups consume local disk
+if [ "$BACKUP_MODE" = "local" ] || [ "$BACKUP_MODE" = "both" ]; then
+    if [ "$DISK_WARNING" = "critical" ]; then
+        WARNINGS="${WARNINGS}CRITICAL: Server disk usage is ${DISK_PERCENT}%. "
+    elif [ "$DISK_WARNING" = "warning" ]; then
+        WARNINGS="${WARNINGS}WARNING: Server disk usage is ${DISK_PERCENT}%. "
+    fi
 fi
 
 if [ -z "$WARNINGS" ]; then
@@ -114,15 +137,21 @@ case "$format" in
 Borg Backup Report for User: $user
 Date: $REPORT_DATE $REPORT_TIME
 
+=== Backup Location ===
+Mode: $BACKUP_LOCATION_LABEL
+Detail: $BACKUP_LOCATION_DETAIL
+
 === Backup Status ===
 Last Backup: $LAST_BACKUP
 Total Archives: $BACKUP_COUNT
 Days Since Last Backup: $DAYS_SINCE_BACKUP
 
-=== Storage Usage ===
+=== Storage Usage (borg deduplicated) ===
 User Repository: $(format_size $USER_REPO_SIZE)
 Database Repository: $(format_size $DB_REPO_SIZE)
 Total Backup Size: $(format_size $((USER_REPO_SIZE + DB_REPO_SIZE)))
+$([ "$BACKUP_MODE" = "both" ] && echo "Local user/DB: $(format_size $LOCAL_USER_REPO_SIZE) / $(format_size $LOCAL_DB_REPO_SIZE)
+Remote user/DB: $(format_size $REMOTE_USER_REPO_SIZE) / $(format_size $REMOTE_DB_REPO_SIZE)")
 
 === Recent Backups (Last 7 Days) ===
 $RECENT_BACKUPS
@@ -146,13 +175,20 @@ EOF
         echo "  \"user\": \"$user\","
         echo "  \"report_date\": \"$REPORT_DATE\","
         echo "  \"report_time\": \"$REPORT_TIME\","
+        echo "  \"backup_mode\": \"$BACKUP_MODE\","
+        echo "  \"backup_location\": \"$BACKUP_LOCATION_LABEL\","
+        echo "  \"backup_location_detail\": \"$BACKUP_LOCATION_DETAIL\","
         echo "  \"last_backup\": \"$LAST_BACKUP\","
         echo "  \"backup_count\": $BACKUP_COUNT,"
         echo "  \"days_since_backup\": \"$DAYS_SINCE_BACKUP\","
         echo "  \"storage\": {"
         echo "    \"user_repo_size\": $USER_REPO_SIZE,"
         echo "    \"db_repo_size\": $DB_REPO_SIZE,"
-        echo "    \"total_size\": $((USER_REPO_SIZE + DB_REPO_SIZE))"
+        echo "    \"total_size\": $((USER_REPO_SIZE + DB_REPO_SIZE)),"
+        echo "    \"local_user_repo\": $LOCAL_USER_REPO_SIZE,"
+        echo "    \"local_db_repo\": $LOCAL_DB_REPO_SIZE,"
+        echo "    \"remote_user_repo\": $REMOTE_USER_REPO_SIZE,"
+        echo "    \"remote_db_repo\": $REMOTE_DB_REPO_SIZE"
         echo "  },"
         echo "  \"warnings\": \"$WARNINGS\","
         echo "  \"config\": {"
@@ -170,15 +206,30 @@ EOF
         echo "Date: $REPORT_DATE $REPORT_TIME"
         echo "========================================"
         echo ""
+        echo "=== Backup Location ==="
+        echo "Mode:               $BACKUP_LOCATION_LABEL"
+        echo "Detail:             $BACKUP_LOCATION_DETAIL"
+        echo ""
         echo "=== Backup Status ==="
         echo "Last Backup:        $LAST_BACKUP"
         echo "Total Archives:     $BACKUP_COUNT"
         echo "Days Since Backup:  $DAYS_SINCE_BACKUP"
         echo ""
-        echo "=== Storage Usage ==="
-        echo "User Repository:    $(format_size $USER_REPO_SIZE)"
-        echo "Database Repository: $(format_size $DB_REPO_SIZE)"
-        echo "Total Backup Size:  $(format_size $((USER_REPO_SIZE + DB_REPO_SIZE)))"
+        echo "=== Storage Usage (borg deduplicated) ==="
+        if [ "$BACKUP_MODE" = "both" ]; then
+            echo "Local user:         $(format_size $LOCAL_USER_REPO_SIZE)"
+            echo "Local DB:           $(format_size $LOCAL_DB_REPO_SIZE)"
+            echo "Remote user:        $(format_size $REMOTE_USER_REPO_SIZE)"
+            echo "Remote DB:          $(format_size $REMOTE_DB_REPO_SIZE)"
+        elif [ "$BACKUP_MODE" = "remote" ]; then
+            echo "Remote user:        $(format_size $USER_REPO_SIZE)"
+            echo "Remote DB:          $(format_size $DB_REPO_SIZE)"
+            echo "Total (remote):     $(format_size $((USER_REPO_SIZE + DB_REPO_SIZE)))"
+        else
+            echo "Local user:         $(format_size $USER_REPO_SIZE)"
+            echo "Local DB:           $(format_size $DB_REPO_SIZE)"
+            echo "Total (local):      $(format_size $((USER_REPO_SIZE + DB_REPO_SIZE)))"
+        fi
         echo ""
         echo "=== Recent Backups (Last 7 Days) ==="
         if [ -n "$RECENT_BACKUPS" ]; then

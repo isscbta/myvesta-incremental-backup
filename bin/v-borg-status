@@ -53,6 +53,9 @@ load_user_borg_config "$user" 2>/dev/null
 #                Gather Status Information                  #
 #----------------------------------------------------------#
 
+BACKUP_LOCATION_LABEL=$(get_backup_location_label)
+BACKUP_LOCATION_DETAIL=$(get_backup_location_detail)
+
 USER_REPO=$(build_borg_repo_path "user" "$user")
 DB_REPO=$(build_borg_repo_path "db" "$user")
 VESTA_REPO=$(build_borg_repo_path "vesta" "")
@@ -62,12 +65,30 @@ BACKUP_COUNT=$(get_backup_count "$user")
 USER_REPO_HEALTH=$(check_repo_health "$USER_REPO")
 DB_REPO_HEALTH=$(check_repo_health "$DB_REPO")
 
-# Get repository sizes
+# Primary sizes (respect current BACKUP_MODE path — remote uses ssh:// borg info)
 USER_REPO_SIZE=$(get_repo_size "$USER_REPO")
 DB_REPO_SIZE=$(get_repo_size "$DB_REPO")
 
-# Get disk usage
-DISK_USAGE=$(get_disk_usage "$BACKUP_DIR")
+# For "both", also measure the other side
+LOCAL_USER_REPO_SIZE=0
+LOCAL_DB_REPO_SIZE=0
+REMOTE_USER_REPO_SIZE=0
+REMOTE_DB_REPO_SIZE=0
+if [ "$BACKUP_MODE" = "both" ]; then
+    LOCAL_USER_REPO_SIZE=$(get_repo_size "$(build_borg_repo_path_mode local user "$user")")
+    LOCAL_DB_REPO_SIZE=$(get_repo_size "$(build_borg_repo_path_mode local db "$user")")
+    REMOTE_USER_REPO_SIZE=$(get_repo_size "$(build_borg_repo_path_mode remote user "$user")")
+    REMOTE_DB_REPO_SIZE=$(get_repo_size "$(build_borg_repo_path_mode remote db "$user")")
+elif [ "$BACKUP_MODE" = "remote" ]; then
+    REMOTE_USER_REPO_SIZE=$USER_REPO_SIZE
+    REMOTE_DB_REPO_SIZE=$DB_REPO_SIZE
+else
+    LOCAL_USER_REPO_SIZE=$USER_REPO_SIZE
+    LOCAL_DB_REPO_SIZE=$DB_REPO_SIZE
+fi
+
+# Server disk (always the myVesta host — not Storage Box capacity)
+DISK_USAGE=$(get_disk_usage "${BACKUP_DIR:-/}")
 DISK_TOTAL=$(echo "$DISK_USAGE" | awk '{print $1}')
 DISK_USED=$(echo "$DISK_USAGE" | awk '{print $2}')
 DISK_AVAIL=$(echo "$DISK_USAGE" | awk '{print $3}')
@@ -81,6 +102,9 @@ case "$format" in
     json)
         echo "{"
         echo "  \"user\": \"$user\","
+        echo "  \"backup_mode\": \"$BACKUP_MODE\","
+        echo "  \"backup_location\": \"$BACKUP_LOCATION_LABEL\","
+        echo "  \"backup_location_detail\": \"$BACKUP_LOCATION_DETAIL\","
         echo "  \"last_backup\": \"$LAST_BACKUP\","
         echo "  \"backup_count\": $BACKUP_COUNT,"
         echo "  \"repository_health\": {"
@@ -89,9 +113,13 @@ case "$format" in
         echo "  },"
         echo "  \"repository_sizes\": {"
         echo "    \"user_repo\": $USER_REPO_SIZE,"
-        echo "    \"db_repo\": $DB_REPO_SIZE"
+        echo "    \"db_repo\": $DB_REPO_SIZE,"
+        echo "    \"local_user_repo\": $LOCAL_USER_REPO_SIZE,"
+        echo "    \"local_db_repo\": $LOCAL_DB_REPO_SIZE,"
+        echo "    \"remote_user_repo\": $REMOTE_USER_REPO_SIZE,"
+        echo "    \"remote_db_repo\": $REMOTE_DB_REPO_SIZE"
         echo "  },"
-        echo "  \"disk_usage\": {"
+        echo "  \"server_disk\": {"
         echo "    \"total\": $DISK_TOTAL,"
         echo "    \"used\": $DISK_USED,"
         echo "    \"available\": $DISK_AVAIL,"
@@ -107,13 +135,15 @@ case "$format" in
         ;;
         
     plain)
-        echo -e "USER\tLAST_BACKUP\tBACKUP_COUNT\tUSER_REPO_HEALTH\tDB_REPO_HEALTH"
-        echo -e "$user\t$LAST_BACKUP\t$BACKUP_COUNT\t$USER_REPO_HEALTH\t$DB_REPO_HEALTH"
+        echo -e "USER\tMODE\tLAST_BACKUP\tBACKUP_COUNT\tUSER_REPO_HEALTH\tDB_REPO_HEALTH"
+        echo -e "$user\t$BACKUP_MODE\t$LAST_BACKUP\t$BACKUP_COUNT\t$USER_REPO_HEALTH\t$DB_REPO_HEALTH"
         ;;
         
     shell|*)
         echo "Backup Status for User: $user"
         echo "================================"
+        echo "Backup location:    $BACKUP_LOCATION_LABEL"
+        echo "                    $BACKUP_LOCATION_DETAIL"
         echo "Last Backup:        $LAST_BACKUP"
         echo "Total Archives:     $BACKUP_COUNT"
         echo ""
@@ -121,11 +151,21 @@ case "$format" in
         echo "  User Repo:        $USER_REPO_HEALTH"
         echo "  DB Repo:          $DB_REPO_HEALTH"
         echo ""
-        echo "Repository Sizes:"
-        echo "  User Repo:        $(format_size $USER_REPO_SIZE)"
-        echo "  DB Repo:          $(format_size $DB_REPO_SIZE)"
+        echo "Repository Sizes (borg deduplicated):"
+        if [ "$BACKUP_MODE" = "both" ]; then
+            echo "  Local user:       $(format_size $LOCAL_USER_REPO_SIZE)"
+            echo "  Local DB:         $(format_size $LOCAL_DB_REPO_SIZE)"
+            echo "  Remote user:      $(format_size $REMOTE_USER_REPO_SIZE)"
+            echo "  Remote DB:        $(format_size $REMOTE_DB_REPO_SIZE)"
+        elif [ "$BACKUP_MODE" = "remote" ]; then
+            echo "  Remote user:      $(format_size $USER_REPO_SIZE)"
+            echo "  Remote DB:        $(format_size $DB_REPO_SIZE)"
+        else
+            echo "  Local user:       $(format_size $USER_REPO_SIZE)"
+            echo "  Local DB:         $(format_size $DB_REPO_SIZE)"
+        fi
         echo ""
-        echo "Disk Usage:"
+        echo "Server Disk (this host — not remote backup storage):"
         echo "  Total:            $(format_size $DISK_TOTAL)"
         echo "  Used:             $(format_size $DISK_USED)"
         echo "  Available:        $(format_size $DISK_AVAIL)"
@@ -134,8 +174,8 @@ case "$format" in
         echo "Backup Config:"
         echo "  Enabled:          $BORG_BACKUP_ENABLED"
         echo "  Web:              $BORG_BACKUP_WEB"
-        echo "  Mail:              $BORG_BACKUP_MAIL"
-        echo "  DB:                $BORG_BACKUP_DB"
+        echo "  Mail:             $BORG_BACKUP_MAIL"
+        echo "  DB:               $BORG_BACKUP_DB"
         ;;
 esac
 
