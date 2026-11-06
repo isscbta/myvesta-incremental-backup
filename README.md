@@ -8,6 +8,7 @@ A comprehensive, production-ready incremental backup system for myVesta Control 
 - [Installation](#installation)
 - [Configuration](#configuration)
   - [Global Configuration (`borg.conf`)](#global-configuration-borgconf)
+  - [MySQL dump hardening](#mysql-dump-hardening)
   - [Per-User Configuration (`borg-backup.conf`)](#per-user-configuration-borg-backupconf)
 - [Commands Reference](#commands-reference)
   - [Backup Commands](#backup-commands)
@@ -34,9 +35,9 @@ A comprehensive, production-ready incremental backup system for myVesta Control 
 - **Partial Restore**: Restore specific components (WEB, DNS, MAIL, DB) without full restore
 - **Per-User Configuration**: Fine-grained control over what gets backed up per user
 - **Centralized Exclusions**: Global exclusion patterns with per-user overrides
-- **Monitoring & Reporting**: Comprehensive status, reporting, and integrity check commands
+- **Monitoring & Reporting**: Status/report show backup location (local / remote / both) and sizes via `borg info` (works over SSH)
 - **myVesta Integration**: Follows myVesta CLI (`v-`) command conventions
-- **MySQL Support**: Native MySQL database backup support
+- **MySQL Support**: Full-database dumps streamed into Borg (`mysqldump | borg`); no table skipping; optional temporary MySQL GLOBAL boost for large DBs
 - **Retention Policies**: Flexible retention with daily/weekly/monthly/yearly levels
 
 ## Installation
@@ -166,11 +167,11 @@ BACKUP_MODE="local"
 **Local Mode** (`BACKUP_MODE="local"`):
 - Backups stored in `/backup/borg` on local server
 - Fastest option for large servers
-- Requires sufficient local disk space
+- Databases also streamed into Borg (no intermediate `.sql` file); still needs space for the Borg repo itself
 
 **Remote Mode** (`BACKUP_MODE="remote"`):
-- Backups sent directly to remote server via SSH
-- No local storage required
+- Home/files and DBs go straight into remote Borg repos over SSH (`ssh://…`)
+- **Databases**: `mysqldump | borg create … -` — streamed; no local `.sql` dump file, so remote mode does not need free disk for SQL dumps
 - Best for servers with limited disk space
 
 **Both Mode** (`BACKUP_MODE="both"`):
@@ -178,6 +179,7 @@ BACKUP_MODE="local"
 - Then maintains a remote copy via `REMOTE_SYNC_METHOD` (rsync mirror or independent borg backup)
 - Provides redundancy: local (fast restore) + remote (disaster recovery)
 - Best for critical data requiring both speed and safety
+- **DB note**: with `REMOTE_SYNC_METHOD="borg"`, one shared temp SQL file is used for local+remote archives (needs local space; see `MYSQLDUMP_TMP_DIR`). With `rsync`, local stream dump is enough — remote gets the mirrored repo.
 - **Restore behavior**: If both local and remote backups exist, you'll be prompted to choose which source to use
 
 #### Remote sync methods (both mode)
@@ -264,15 +266,20 @@ NOTIFY_ADMIN_BACKUP="admin@example.com"
 #### Monitoring & Reporting
 
 ```bash
-# Disk space warning thresholds (percentage)
+# Disk space warning thresholds (percentage) — this host's filesystem
 DISK_SPACE_WARNING_THRESHOLD=80
 DISK_SPACE_CRITICAL_THRESHOLD=90
+
+# Flag users in v-borg-report-global whose last backup is older than N days
+STALE_BACKUP_THRESHOLD_DAYS=3
 
 # Require per-user config file (yes/no)
 # If "yes", each user must have borg-backup.conf file
 # If "no" (default), users without config use defaults (backward compatible)
 REQUIRE_PER_USER_CONFIG="no"
 ```
+
+Status and reports distinguish **server disk** (this host) from **backup storage** (Borg `unique_csize` via `borg info`, including remote `ssh://` repos). In `both` mode they can show local and remote sizes separately.
 
 #### Advanced Settings
 
@@ -290,6 +297,38 @@ ARCHIVE_DATE_FORMAT="%Y-%m-%d_%H-%M-%S"
 # Log directory
 LOG_DIR="/var/log/borg"
 ```
+
+#### MySQL dump hardening
+
+Large databases (WordPress `wp_options`, multi‑GB InnoDB/MyISAM, etc.) can fail mid-dump with packet/timeout errors. The backup scripts harden dumps in layers and **never skip/ignore tables** — always a full database.
+
+| Mode | How the dump reaches Borg |
+|------|---------------------------|
+| `local` or `remote` | Stream: `mysqldump \| borg create repo::archive -` (no local `.sql` file) |
+| `both` + `rsync` | Stream into local repo; rsync mirrors repos to remote |
+| `both` + `borg` | One temp `.sql` file, then two `borg create` (local + remote); needs free disk |
+
+```bash
+# Client packet size for mysqldump (always applied via temp defaults file)
+MYSQLDUMP_MAX_ALLOWED_PACKET="1G"
+MYSQLDUMP_MAX_ALLOWED_PACKET_BYTES=1073741824
+
+# Temporary SET GLOBAL only if DB ≥ this size AND current GLOBALs are too low;
+# values scale with DB GiB; always restored afterward (never permanent my.cnf change)
+MYSQLDUMP_GLOBAL_TUNE_MIN_BYTES=536870912   # 512 MiB
+MYSQLDUMP_NET_TIMEOUT=600
+MYSQLDUMP_WAIT_TIMEOUT=28800
+
+# Retries on transient failures (e.g. Error 1412); never drops tables
+MYSQLDUMP_MAX_ATTEMPTS=3
+MYSQLDUMP_RETRY_SLEEP=5
+
+# Optional extra mysqldump flags; temp dir only for both+borg
+MYSQLDUMP_EXTRA_OPTIONS=""
+MYSQLDUMP_TMP_DIR=""   # empty = auto-pick among BACKUP_DIR/tmp, /var/tmp, /tmp
+```
+
+**GLOBAL boost**: if needed, the script briefly raises `max_allowed_packet`, `net_read/write_timeout`, and `wait/interactive_timeout` with `SET GLOBAL`, then restores the previous values (also on `EXIT` trap if the job dies). Small DBs or already-sufficient GLOBALs skip the server change and use client-only flags.
 
 ### Per-User Configuration (`borg-backup.conf`)
 
@@ -686,39 +725,42 @@ v-borg-status admin json
 ```
 
 **Output includes**:
+- Backup location (`local` / `remote` / `both`) and where repos live
 - Last backup date/time
 - Total archives count
 - Repository health status (ok/error)
-- Repository sizes (compressed)
-- Disk usage (total, used, available, percent)
+- Repository sizes from `borg info` (deduplicated `unique_csize`; remote over SSH)
+- Server disk usage on this host (not Storage Box capacity)
 - Backup configuration (enabled, web, mail, db)
 
-**Example Output**:
+**Example Output** (`BACKUP_MODE="remote"`):
 ```
 Backup Status for User: admin
 ================================
-Last Backup:        2025-10-17 08:30:12
-Total Archives:     15
+Backup location:    remote
+                    Remote only — u123456@u123456.your-storagebox.de:23/home/borg
+Last Backup:        2026-11-06 16:59:28
+Total Archives:     4
 
 Repository Health:
   User Repo:        ok
   DB Repo:          ok
 
-Repository Sizes:
-  User Repo:        2.5GiB
-  DB Repo:          150MiB
+Repository Sizes (borg deduplicated):
+  Remote user:      26GiB
+  Remote DB:        528MiB
 
-Disk Usage:
-  Total:            500GiB
-  Used:             250GiB
-  Available:        250GiB
-  Usage:            50%
+Server Disk (this host — not remote backup storage):
+  Total:            301GiB
+  Used:             181GiB
+  Available:        108GiB
+  Usage:            63%
 
 Backup Config:
   Enabled:          yes
   Web:              *
-  Mail:              *
-  DB:                *
+  Mail:             *
+  DB:               *
 ```
 
 #### `v-borg-report`
@@ -747,30 +789,34 @@ v-borg-report admin json
 ```
 
 **Output includes**:
+- Backup location (mode + local/remote path detail)
 - Backup summary (last 7 days)
-- Storage usage (repository sizes)
-- Success/failure rate
+- Storage usage from `borg info` (deduplicated; local and/or remote when in `both` mode)
 - Days since last backup
 - Recent backups list
-- Warnings (no recent backup, low disk space, etc.)
+- Warnings (no recent backup, low disk space on this host, etc.)
 - Backup configuration
 
 **Use Case**: Perfect for CRON jobs to send daily/weekly reports to users.
 
-**Example Email Output**:
+**Example Email Output** (`BACKUP_MODE="remote"`):
 ```
 Borg Backup Report for User: admin
-Date: 2025-10-17 09:00:00
+Date: 2026-11-06 18:53:22
+
+=== Backup Location ===
+Mode:               remote
+Detail:             Remote only — u123456@u123456.your-storagebox.de:23/home/borg
 
 === Backup Status ===
-Last Backup: 2025-10-17 08:30:12
-Total Archives: 15
-Days Since Last Backup: 0
+Last Backup:        2026-11-06 16:59:28
+Total Archives:     4
+Days Since Backup:  0
 
-=== Storage Usage ===
-User Repository: 2.5GiB
-Database Repository: 150MiB
-Total Backup Size: 2.65GiB
+=== Storage Usage (borg deduplicated) ===
+Remote user:        26GiB
+Remote DB:          528MiB
+Total (remote):     27GiB
 
 === Recent Backups (Last 7 Days) ===
 [Archive list...]
@@ -779,10 +825,10 @@ Total Backup Size: 2.65GiB
 None
 
 === Backup Configuration ===
-Enabled: yes
-Web Domains: *
-Mail Domains: *
-Databases: *
+Enabled:            yes
+Web Domains:        *
+Mail Domains:       *
+Databases:          *
 ```
 
 #### `v-borg-report-global`
@@ -810,8 +856,10 @@ v-borg-report-global json
 ```
 
 **Output includes**:
-- **Disk Space**: Total, used, available, usage %, per-repository breakdown
-- **Backup Statistics**: Total users, users with backups, total archives, success rate
+- **Backup Location**: Mode and local/remote detail
+- **Server Disk**: This host's filesystem (not remote Storage Box capacity)
+- **Backup Storage**: Per-repo sizes from `borg info` (home/db/vesta/etc/scripts; works for remote)
+- **Backup Statistics**: Total users, users with backups, total archives, stale users (`STALE_BACKUP_THRESHOLD_DAYS`)
 - **System Health**: Repository integrity status, recent errors/warnings
 - **Retention Policy**: Current retention settings
 
@@ -1110,9 +1158,10 @@ v-borg-restore-user ARCHIVE admin
 ```
 
 **Benefits**:
-- No local disk space used
+- Home + DB archives written directly to the Storage Box over SSH
+- DB dumps streamed (`mysqldump | borg`) — no multi‑GB `.sql` file on the server
 - Backups stored off-site (disaster recovery)
-- Automatic remote repository management
+- `v-borg-status` / `v-borg-report` show remote sizes via `borg info`
 
 ### Use Case 6: Local + Remote Backup (Redundancy)
 
