@@ -188,8 +188,13 @@ DB_COUNT=0
 DATABASES=$(get_user_mysql_databases "$user")
 
 # Clean up stale dump temp files from interrupted runs (older than 1 day)
-if [ -d "$BACKUP_DIR/tmp" ]; then
-    find "$BACKUP_DIR/tmp" -name '*.sql' -mtime +1 -delete 2>/dev/null
+DUMP_TMP_DIR="$BACKUP_DIR/tmp"
+mkdir -p "$DUMP_TMP_DIR"
+find "$DUMP_TMP_DIR" -name '*.sql' -mtime +1 -delete 2>/dev/null
+
+# Large WP/InnoDB dumps need raised packet + timeouts (Error 2013 otherwise)
+if [ -n "$DATABASES" ]; then
+    prepare_mysql_for_large_dump 2>&1 | tee -a "$LOG_FILE"
 fi
 
 if [ -n "$DATABASES" ]; then
@@ -200,33 +205,34 @@ if [ -n "$DATABASES" ]; then
         
         DB_ARCHIVE_NAME="$database-$ARCHIVE_DATE"
         echo "$(get_timestamp) Backing up database: $database" | tee -a "$LOG_FILE"
-        
+
+        # Always dump to a local temp file first, then feed borg.
+        # Piping mysqldump|borg over a slow remote keeps the MySQL connection open for
+        # the whole upload and triggers Error 2013 on large DBs (8GB+ / huge wp_options).
+        DUMP_FILE=$(mktemp "$DUMP_TMP_DIR/${database}.XXXXXX.sql")
+        mysqldump_to_file "$database" "$DUMP_FILE" 2>>"$LOG_FILE"
+        DUMP_EXIT=$?
+        if [ "$DUMP_EXIT" -ne 0 ]; then
+            echo "$(get_timestamp) Error: mysqldump failed for database $database (exit $DUMP_EXIT)" | tee -a "$LOG_FILE"
+            BACKUP_FAILED=1
+            rm -f "$DUMP_FILE"
+            continue
+        fi
+
+        borg create $OPTIONS_CREATE "$DB_REPO::$DB_ARCHIVE_NAME" - < "$DUMP_FILE" 2>&1 | tee -a "$LOG_FILE"
+        BORG_EXIT=${PIPESTATUS[0]}
+        if borg_ok "$BORG_EXIT"; then
+            echo "$(get_timestamp) Database $database backed up successfully" | tee -a "$LOG_FILE"
+            ((DB_COUNT++))
+            borg prune $OPTIONS_PRUNE --glob-archives "${database}-*" "$DB_REPO" 2>&1 | tee -a "$LOG_FILE"
+            compact_repo_if_supported "$DB_REPO" >> "$LOG_FILE" 2>&1
+        else
+            echo "$(get_timestamp) Error: borg create failed for database $database (exit $BORG_EXIT)" | tee -a "$LOG_FILE"
+            BACKUP_FAILED=1
+        fi
+
+        # Independent remote borg copy when both+borg (same dump file, no second mysqldump)
         if [ "$BACKUP_MODE" = "both" ] && [ "$REMOTE_SYNC_METHOD" = "borg" ]; then
-            DUMP_TMP_DIR="$BACKUP_DIR/tmp"
-            mkdir -p "$DUMP_TMP_DIR"
-            DUMP_FILE=$(mktemp "$DUMP_TMP_DIR/${database}.XXXXXX.sql")
-            
-            mysqldump "$database" --opt --routines --skip-comments --single-transaction --quick > "$DUMP_FILE" 2>>"$LOG_FILE"
-            DUMP_EXIT=$?
-            if [ "$DUMP_EXIT" -ne 0 ]; then
-                echo "$(get_timestamp) Error: mysqldump failed for database $database (exit $DUMP_EXIT)" | tee -a "$LOG_FILE"
-                BACKUP_FAILED=1
-                rm -f "$DUMP_FILE"
-                continue
-            fi
-            
-            borg create $OPTIONS_CREATE "$DB_REPO::$DB_ARCHIVE_NAME" - < "$DUMP_FILE" 2>&1 | tee -a "$LOG_FILE"
-            BORG_EXIT=${PIPESTATUS[0]}
-            if borg_ok "$BORG_EXIT"; then
-                echo "$(get_timestamp) Database $database backed up successfully" | tee -a "$LOG_FILE"
-                ((DB_COUNT++))
-                borg prune $OPTIONS_PRUNE --glob-archives "${database}-*" "$DB_REPO" 2>&1 | tee -a "$LOG_FILE"
-                compact_repo_if_supported "$DB_REPO" >> "$LOG_FILE" 2>&1
-            else
-                echo "$(get_timestamp) Error: borg create failed for database $database (exit $BORG_EXIT)" | tee -a "$LOG_FILE"
-                BACKUP_FAILED=1
-            fi
-            
             borg create $OPTIONS_CREATE "$REMOTE_DB_REPO::$DB_ARCHIVE_NAME" - < "$DUMP_FILE" 2>&1 | tee -a "$LOG_FILE"
             REMOTE_BORG_EXIT=${PIPESTATUS[0]}
             if borg_ok "$REMOTE_BORG_EXIT"; then
@@ -237,41 +243,9 @@ if [ -n "$DATABASES" ]; then
                 echo "$(get_timestamp) ERROR: remote borg create failed for database $database (exit $REMOTE_BORG_EXIT)" | tee -a "$LOG_FILE"
                 SYNC_FAILED=1
             fi
-            
-            rm -f "$DUMP_FILE"
-        else
-        # Dump database and pipe directly to borg
-        # --single-transaction for InnoDB consistency; --quick avoids buffering full result set
-        # Keep tee OUT of the pipe so PIPESTATUS[0]/[1] stay mysqldump/borg (not emptied by tee).
-        BORG_OUT=$(mktemp)
-        mysqldump "$database" --opt --routines --skip-comments --single-transaction --quick 2>>"$LOG_FILE" | \
-            borg create $OPTIONS_CREATE "$DB_REPO::$DB_ARCHIVE_NAME" - >"$BORG_OUT" 2>&1
-        # Copy PIPESTATUS in one shot — assigning ${PIPESTATUS[0]} alone resets the array
-        pipe_rc=("${PIPESTATUS[@]}")
-        DUMP_EXIT=${pipe_rc[0]:-1}
-        BORG_EXIT=${pipe_rc[1]:-2}
-        tee -a "$LOG_FILE" < "$BORG_OUT"
-        rm -f "$BORG_OUT"
-        if [ "$DUMP_EXIT" -ne 0 ] && borg_ok "$BORG_EXIT"; then
-            # mysqldump failed but borg created an archive from truncated data — remove it
-            echo "$(get_timestamp) Error: mysqldump failed for $database (exit $DUMP_EXIT) — removing truncated archive" | tee -a "$LOG_FILE"
-            borg delete "$DB_REPO::$DB_ARCHIVE_NAME" >> "$LOG_FILE" 2>&1
-            BACKUP_FAILED=1
-        elif [ "$DUMP_EXIT" -ne 0 ]; then
-            echo "$(get_timestamp) Error: mysqldump failed for database $database (exit $DUMP_EXIT)" | tee -a "$LOG_FILE"
-            BACKUP_FAILED=1
-        elif ! borg_ok "$BORG_EXIT"; then
-            echo "$(get_timestamp) Error: borg create failed for database $database (exit $BORG_EXIT)" | tee -a "$LOG_FILE"
-            BACKUP_FAILED=1
-        else
-            echo "$(get_timestamp) Database $database backed up successfully" | tee -a "$LOG_FILE"
-            ((DB_COUNT++))
-            
-            # Prune old database archives (keep only archives for this specific database)
-            borg prune $OPTIONS_PRUNE --glob-archives "${database}-*" "$DB_REPO" 2>&1 | tee -a "$LOG_FILE"
-            compact_repo_if_supported "$DB_REPO" >> "$LOG_FILE" 2>&1
         fi
-        fi
+
+        rm -f "$DUMP_FILE"
     done <<< "$DATABASES"
     
     echo "$(get_timestamp) Total databases backed up: $DB_COUNT" | tee -a "$LOG_FILE"

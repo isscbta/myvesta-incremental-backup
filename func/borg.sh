@@ -95,6 +95,56 @@ borg_ok() {
     [ "$ec" -eq 0 ] || [ "$ec" -eq 1 ]
 }
 
+# Raise MariaDB/MySQL GLOBAL limits so large dumps (multi-GB, huge wp_options) do not
+# die with Error 2013 "Lost connection". Defaults: 1G packet, 600s net, 8h wait.
+# Non-fatal if SET GLOBAL is denied — mysqldump --max-allowed-packet still helps the client.
+# Usage: prepare_mysql_for_large_dump
+prepare_mysql_for_large_dump() {
+    local packet_bytes="${MYSQLDUMP_MAX_ALLOWED_PACKET_BYTES:-1073741824}"
+    local net_timeout="${MYSQLDUMP_NET_TIMEOUT:-600}"
+    local wait_timeout="${MYSQLDUMP_WAIT_TIMEOUT:-28800}"
+
+    if ! command -v mysql >/dev/null 2>&1; then
+        echo "Warning: mysql client not found — skipping server dump tuning"
+        return 0
+    fi
+
+    if mysql -e "
+        SET GLOBAL max_allowed_packet=${packet_bytes};
+        SET GLOBAL net_read_timeout=${net_timeout};
+        SET GLOBAL net_write_timeout=${net_timeout};
+        SET GLOBAL wait_timeout=${wait_timeout};
+        SET GLOBAL interactive_timeout=${wait_timeout};
+    " 2>&1; then
+        echo "MySQL dump tuning applied (max_allowed_packet=${packet_bytes}, net_timeout=${net_timeout}s, wait_timeout=${wait_timeout}s)"
+    else
+        echo "Warning: could not SET GLOBAL MySQL dump limits (continuing with client flags)"
+    fi
+}
+
+# Dump one database to a file with flags safe for large InnoDB/WP databases.
+# Usage: mysqldump_to_file <database> <outfile>
+# Returns mysqldump exit code.
+mysqldump_to_file() {
+    local db="$1"
+    local outfile="$2"
+    local packet="${MYSQLDUMP_MAX_ALLOWED_PACKET:-1G}"
+
+    # --single-transaction: consistent InnoDB snapshot without locking tables
+    # --quick: stream rows (do not buffer whole table in memory)
+    # --max-allowed-packet: allow large option_value / BLOB rows (wp_options)
+    # shellcheck disable=SC2086
+    mysqldump "$db" \
+        --opt \
+        --routines \
+        --skip-comments \
+        --single-transaction \
+        --quick \
+        --max-allowed-packet="$packet" \
+        ${MYSQLDUMP_EXTRA_OPTIONS:-} \
+        > "$outfile"
+}
+
 # Run borg compact on a repo if borg >= 1.2 (compact was added in 1.2)
 # Usage: compact_repo_if_supported <repo_path>
 compact_repo_if_supported() {
