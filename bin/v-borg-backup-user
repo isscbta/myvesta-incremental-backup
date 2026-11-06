@@ -246,12 +246,12 @@ if [ -n "$DATABASES" ]; then
         BORG_OUT=$(mktemp)
         mysqldump "$database" --opt --routines --skip-comments --single-transaction --quick 2>>"$LOG_FILE" | \
             borg create $OPTIONS_CREATE "$DB_REPO::$DB_ARCHIVE_NAME" - >"$BORG_OUT" 2>&1
-        DUMP_EXIT=${PIPESTATUS[0]}
-        BORG_EXIT=${PIPESTATUS[1]}
+        # Copy PIPESTATUS in one shot — assigning ${PIPESTATUS[0]} alone resets the array
+        pipe_rc=("${PIPESTATUS[@]}")
+        DUMP_EXIT=${pipe_rc[0]:-1}
+        BORG_EXIT=${pipe_rc[1]:-2}
         tee -a "$LOG_FILE" < "$BORG_OUT"
         rm -f "$BORG_OUT"
-        DUMP_EXIT=${DUMP_EXIT:-1}
-        BORG_EXIT=${BORG_EXIT:-2}
         if [ "$DUMP_EXIT" -ne 0 ] && borg_ok "$BORG_EXIT"; then
             # mysqldump failed but borg created an archive from truncated data — remove it
             echo "$(get_timestamp) Error: mysqldump failed for $database (exit $DUMP_EXIT) — removing truncated archive" | tee -a "$LOG_FILE"
