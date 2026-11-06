@@ -194,26 +194,32 @@ find "$DUMP_TMP_DIR" -name '*.sql' -mtime +1 -delete 2>/dev/null
 
 # Dump strategy:
 #  - always: client-only packet/net timeouts + dump-to-temp-file (no server change)
-#  - GLOBAL raise/restore only if a DB is large (>= MYSQLDUMP_GLOBAL_TUNE_MIN_BYTES)
-#    AND current GLOBALs are too low; also one retry with GLOBAL if dump fails cold
+#  - GLOBAL raise/restore scaled to largest DB size (8GB vs 32GB → different timeouts)
+#  - one retry with GLOBAL if dump fails cold
 if [ -n "$DATABASES" ]; then
-    ensure_mysqldump_client_defaults
     trap 'restore_mysql_after_large_dump 2>&1 | tee -a "$LOG_FILE"' EXIT
 
     NEED_GLOBAL_TUNE=0
+    MAX_DB_SIZE_BYTES=0
     while IFS= read -r database; do
         [ -z "$database" ] && continue
         DB_SIZE_BYTES=$(get_mysql_database_size_bytes "$database")
         DB_SIZE_MB=$(( DB_SIZE_BYTES / 1024 / 1024 ))
         echo "$(get_timestamp) Database $database size: ${DB_SIZE_MB} MB" | tee -a "$LOG_FILE"
+        if [ "$DB_SIZE_BYTES" -gt "$MAX_DB_SIZE_BYTES" ]; then
+            MAX_DB_SIZE_BYTES=$DB_SIZE_BYTES
+        fi
         if mysql_db_needs_global_tune "$database"; then
             NEED_GLOBAL_TUNE=1
             echo "$(get_timestamp) Database $database needs temporary MySQL GLOBAL boost for dump" | tee -a "$LOG_FILE"
         fi
     done <<< "$DATABASES"
 
+    # Client defaults scaled to largest DB (even when GLOBAL is not touched)
+    ensure_mysqldump_client_defaults "$MAX_DB_SIZE_BYTES"
+
     if [ "$NEED_GLOBAL_TUNE" -eq 1 ]; then
-        prepare_mysql_for_large_dump 2>&1 | tee -a "$LOG_FILE"
+        prepare_mysql_for_large_dump "$MAX_DB_SIZE_BYTES" 2>&1 | tee -a "$LOG_FILE"
     else
         echo "$(get_timestamp) MySQL GLOBAL unchanged (client-only dump hardening)" | tee -a "$LOG_FILE"
     fi
@@ -237,7 +243,8 @@ if [ -n "$DATABASES" ]; then
         if [ "$DUMP_EXIT" -ne 0 ] && [ "$_MYSQL_DUMP_TUNING_ACTIVE" != "1" ]; then
             echo "$(get_timestamp) mysqldump failed for $database (exit $DUMP_EXIT) — retrying with temporary MySQL GLOBAL boost" | tee -a "$LOG_FILE"
             rm -f "$DUMP_FILE"
-            prepare_mysql_for_large_dump 2>&1 | tee -a "$LOG_FILE"
+            RETRY_SIZE=$(get_mysql_database_size_bytes "$database")
+            prepare_mysql_for_large_dump "$RETRY_SIZE" 2>&1 | tee -a "$LOG_FILE"
             DUMP_FILE=$(mktemp "$DUMP_TMP_DIR/${database}.XXXXXX.sql")
             mysqldump_to_file "$database" "$DUMP_FILE" 2>>"$LOG_FILE"
             DUMP_EXIT=$?

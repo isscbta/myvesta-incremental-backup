@@ -98,10 +98,11 @@ borg_ok() {
 # Smart MySQL dump hardening (avoid touching GLOBAL unless needed):
 #  1) Always: client-only defaults (--max-allowed-packet + client net_* via temp cnf)
 #  2) GLOBAL raise/restore only when DB is large enough AND current GLOBALs are too low
-#  3) If dump still fails (e.g. Error 2013) without GLOBAL tune → one retry with GLOBAL
+#  3) Targets SCALE with DB size (8GB vs 32GB get different timeouts) with generous headroom
+#  4) If dump still fails without GLOBAL tune → one retry with GLOBAL
 #
 # MYSQLDUMP_GLOBAL_TUNE_MIN_BYTES — size gate for proactive GLOBAL (default 512MiB)
-# Globals: _MYSQL_DUMP_TUNING_ACTIVE, _MYSQL_SAVED_*, _MYSQL_DUMP_CLIENT_CNF
+# Sets: _MYSQL_TUNE_PACKET_BYTES, _MYSQL_TUNE_NET_TIMEOUT, _MYSQL_TUNE_WAIT_TIMEOUT
 
 _MYSQL_DUMP_TUNING_ACTIVE=0
 _MYSQL_SAVED_max_allowed_packet=""
@@ -115,6 +116,9 @@ _MYSQL_CHANGED_net_write_timeout=0
 _MYSQL_CHANGED_wait_timeout=0
 _MYSQL_CHANGED_interactive_timeout=0
 _MYSQL_DUMP_CLIENT_CNF=""
+_MYSQL_TUNE_PACKET_BYTES=""
+_MYSQL_TUNE_NET_TIMEOUT=""
+_MYSQL_TUNE_WAIT_TIMEOUT=""
 
 # Usage: get_mysql_database_size_bytes <database>  → bytes on stdout (0 on failure)
 get_mysql_database_size_bytes() {
@@ -128,18 +132,68 @@ get_mysql_database_size_bytes() {
     echo "${size:-0}"
 }
 
-# Write temp defaults file for mysqldump client timeouts (no server GLOBAL change).
-# Usage: ensure_mysqldump_client_defaults
-ensure_mysqldump_client_defaults() {
-    local net_timeout="${MYSQLDUMP_NET_TIMEOUT:-600}"
-    local packet="${MYSQLDUMP_MAX_ALLOWED_PACKET:-1G}"
+# Compute generous dump targets from DB size. Backup must not fail for 8GB or 32GB+.
+# Sets: _MYSQL_TUNE_PACKET_BYTES, _MYSQL_TUNE_NET_TIMEOUT, _MYSQL_TUNE_WAIT_TIMEOUT
+# Usage: compute_mysqldump_targets_for_bytes <size_bytes>
+compute_mysqldump_targets_for_bytes() {
+    local size_bytes="${1:-0}"
+    local size_gb floor_net floor_wait
+    local conf_packet conf_net conf_wait
 
-    if [ -n "$_MYSQL_DUMP_CLIENT_CNF" ] && [ -f "$_MYSQL_DUMP_CLIENT_CNF" ]; then
-        return 0
+    # Round up to whole GiB (minimum 1 when any significant data)
+    if [ "$size_bytes" -le 0 ]; then
+        size_gb=1
+    else
+        size_gb=$(( (size_bytes + 1073741823) / 1073741824 ))
+        [ "$size_gb" -lt 1 ] && size_gb=1
     fi
 
-    _MYSQL_DUMP_CLIENT_CNF=$(mktemp "${TMPDIR:-/tmp}/borg-mysqldump.XXXXXX.cnf")
-    chmod 600 "$_MYSQL_DUMP_CLIENT_CNF"
+    conf_packet="${MYSQLDUMP_MAX_ALLOWED_PACKET_BYTES:-1073741824}"
+    conf_net="${MYSQLDUMP_NET_TIMEOUT:-600}"
+    conf_wait="${MYSQLDUMP_WAIT_TIMEOUT:-28800}"
+
+    # Packet: row-size limit, not DB size — keep 1G (MariaDB practical ceiling)
+    _MYSQL_TUNE_PACKET_BYTES=$conf_packet
+
+    # Net timeouts: scale with size, generous headroom (slow disks / busy servers)
+    # ~15 min base + ~12 min per GiB, floor at conf, cap 6h
+    floor_net=$(( 900 + size_gb * 720 ))
+    _MYSQL_TUNE_NET_TIMEOUT=$floor_net
+    [ "$_MYSQL_TUNE_NET_TIMEOUT" -lt "$conf_net" ] && _MYSQL_TUNE_NET_TIMEOUT=$conf_net
+    [ "$_MYSQL_TUNE_NET_TIMEOUT" -gt 21600 ] && _MYSQL_TUNE_NET_TIMEOUT=21600
+
+    # Wait/interactive: long-running dump connection must survive the whole job
+    # ~24h minimum when tuning + ~3h per GiB headroom, floor at conf, cap 7d
+    floor_wait=$(( 86400 + size_gb * 10800 ))
+    _MYSQL_TUNE_WAIT_TIMEOUT=$floor_wait
+    [ "$_MYSQL_TUNE_WAIT_TIMEOUT" -lt "$conf_wait" ] && _MYSQL_TUNE_WAIT_TIMEOUT=$conf_wait
+    [ "$_MYSQL_TUNE_WAIT_TIMEOUT" -gt 604800 ] && _MYSQL_TUNE_WAIT_TIMEOUT=604800
+
+    echo "Dump targets for ~${size_gb} GiB DB: packet=${_MYSQL_TUNE_PACKET_BYTES} net=${_MYSQL_TUNE_NET_TIMEOUT}s wait=${_MYSQL_TUNE_WAIT_TIMEOUT}s"
+}
+
+# Write/refresh temp defaults for mysqldump client (no server GLOBAL change).
+# Optional size_bytes scales client net_* the same way as GLOBAL targets.
+# Usage: ensure_mysqldump_client_defaults [size_bytes]
+ensure_mysqldump_client_defaults() {
+    local size_bytes="${1:-0}"
+    local net_timeout packet
+
+    if [ "$size_bytes" -gt 0 ]; then
+        compute_mysqldump_targets_for_bytes "$size_bytes" >/dev/null
+        net_timeout="$_MYSQL_TUNE_NET_TIMEOUT"
+        packet="${MYSQLDUMP_MAX_ALLOWED_PACKET:-1G}"
+    else
+        net_timeout="${MYSQLDUMP_NET_TIMEOUT:-600}"
+        packet="${MYSQLDUMP_MAX_ALLOWED_PACKET:-1G}"
+    fi
+
+    # Refresh file when called again with size (overwrite)
+    if [ -z "$_MYSQL_DUMP_CLIENT_CNF" ] || [ ! -f "$_MYSQL_DUMP_CLIENT_CNF" ]; then
+        _MYSQL_DUMP_CLIENT_CNF=$(mktemp "${TMPDIR:-/tmp}/borg-mysqldump.XXXXXX.cnf")
+        chmod 600 "$_MYSQL_DUMP_CLIENT_CNF"
+    fi
+
     cat > "$_MYSQL_DUMP_CLIENT_CNF" <<EOF
 [client]
 max_allowed_packet=${packet}
@@ -161,7 +215,6 @@ cleanup_mysqldump_client_defaults() {
 }
 
 # True (exit 0) if this DB warrants temporary GLOBAL boost.
-# Large size gate + at least one GLOBAL below dump target.
 # Usage: mysql_db_needs_global_tune <database>
 mysql_db_needs_global_tune() {
     local db="$1"
@@ -176,9 +229,10 @@ mysql_db_needs_global_tune() {
         return 1
     fi
 
-    packet_bytes="${MYSQLDUMP_MAX_ALLOWED_PACKET_BYTES:-1073741824}"
-    net_timeout="${MYSQLDUMP_NET_TIMEOUT:-600}"
-    wait_timeout="${MYSQLDUMP_WAIT_TIMEOUT:-28800}"
+    compute_mysqldump_targets_for_bytes "$size_bytes" >/dev/null
+    packet_bytes="$_MYSQL_TUNE_PACKET_BYTES"
+    net_timeout="$_MYSQL_TUNE_NET_TIMEOUT"
+    wait_timeout="$_MYSQL_TUNE_WAIT_TIMEOUT"
 
     saved=$(mysql -N -e "
         SELECT CONCAT_WS(' ',
@@ -201,12 +255,11 @@ mysql_db_needs_global_tune() {
     return 1
 }
 
-# Raise only those GLOBALs that are below target; remember what we changed for restore.
-# Usage: prepare_mysql_for_large_dump
+# Raise only GLOBALs below size-scaled targets; restore later.
+# Usage: prepare_mysql_for_large_dump [size_bytes]
 prepare_mysql_for_large_dump() {
-    local packet_bytes="${MYSQLDUMP_MAX_ALLOWED_PACKET_BYTES:-1073741824}"
-    local net_timeout="${MYSQLDUMP_NET_TIMEOUT:-600}"
-    local wait_timeout="${MYSQLDUMP_WAIT_TIMEOUT:-28800}"
+    local size_bytes="${1:-0}"
+    local packet_bytes net_timeout wait_timeout
     local saved sql=""
 
     if [ "$_MYSQL_DUMP_TUNING_ACTIVE" = "1" ]; then
@@ -218,6 +271,22 @@ prepare_mysql_for_large_dump() {
         echo "Warning: mysql client not found — skipping server dump tuning"
         return 0
     fi
+
+    if [ "$size_bytes" -gt 0 ]; then
+        compute_mysqldump_targets_for_bytes "$size_bytes"
+    else
+        # Fallback floors from config if caller did not pass size
+        _MYSQL_TUNE_PACKET_BYTES="${MYSQLDUMP_MAX_ALLOWED_PACKET_BYTES:-1073741824}"
+        _MYSQL_TUNE_NET_TIMEOUT="${MYSQLDUMP_NET_TIMEOUT:-600}"
+        _MYSQL_TUNE_WAIT_TIMEOUT="${MYSQLDUMP_WAIT_TIMEOUT:-28800}"
+        echo "Dump targets (config floors): packet=${_MYSQL_TUNE_PACKET_BYTES} net=${_MYSQL_TUNE_NET_TIMEOUT}s wait=${_MYSQL_TUNE_WAIT_TIMEOUT}s"
+    fi
+    packet_bytes="$_MYSQL_TUNE_PACKET_BYTES"
+    net_timeout="$_MYSQL_TUNE_NET_TIMEOUT"
+    wait_timeout="$_MYSQL_TUNE_WAIT_TIMEOUT"
+
+    # Keep client defaults in sync with scaled net timeouts
+    ensure_mysqldump_client_defaults "$size_bytes"
 
     saved=$(mysql -N -e "
         SELECT CONCAT_WS(' ',
@@ -268,13 +337,13 @@ prepare_mysql_for_large_dump() {
     fi
 
     if [ -z "$sql" ]; then
-        echo "MySQL GLOBALs already sufficient for large dump — no server changes"
+        echo "MySQL GLOBALs already sufficient for this dump size — no server changes"
         return 0
     fi
 
     if mysql -e "$sql" 2>&1; then
         _MYSQL_DUMP_TUNING_ACTIVE=1
-        echo "MySQL dump GLOBAL tuning applied temporarily (will restore previous values)"
+        echo "MySQL dump GLOBAL tuning applied temporarily (packet=${packet_bytes}, net=${net_timeout}s, wait=${wait_timeout}s; will restore)"
         echo "Previous GLOBAL: packet=${_MYSQL_SAVED_max_allowed_packet} net_read=${_MYSQL_SAVED_net_read_timeout} net_write=${_MYSQL_SAVED_net_write_timeout} wait=${_MYSQL_SAVED_wait_timeout} interactive=${_MYSQL_SAVED_interactive_timeout}"
     else
         echo "Warning: could not SET GLOBAL MySQL dump limits (continuing with client flags)"
