@@ -95,27 +95,122 @@ borg_ok() {
     [ "$ec" -eq 0 ] || [ "$ec" -eq 1 ]
 }
 
-# Temporary MySQL GLOBAL tuning for large dumps. Saves prior values and restores
-# them after backup so we do not permanently change sysadmin server settings.
-# Defaults while dumping: 1G packet, 600s net, 8h wait.
-# Globals used: _MYSQL_DUMP_TUNING_ACTIVE, _MYSQL_SAVED_*
-# Usage: prepare_mysql_for_large_dump
-#        restore_mysql_after_large_dump
+# Smart MySQL dump hardening (avoid touching GLOBAL unless needed):
+#  1) Always: client-only defaults (--max-allowed-packet + client net_* via temp cnf)
+#  2) GLOBAL raise/restore only when DB is large enough AND current GLOBALs are too low
+#  3) If dump still fails (e.g. Error 2013) without GLOBAL tune → one retry with GLOBAL
+#
+# MYSQLDUMP_GLOBAL_TUNE_MIN_BYTES — size gate for proactive GLOBAL (default 512MiB)
+# Globals: _MYSQL_DUMP_TUNING_ACTIVE, _MYSQL_SAVED_*, _MYSQL_DUMP_CLIENT_CNF
+
 _MYSQL_DUMP_TUNING_ACTIVE=0
 _MYSQL_SAVED_max_allowed_packet=""
 _MYSQL_SAVED_net_read_timeout=""
 _MYSQL_SAVED_net_write_timeout=""
 _MYSQL_SAVED_wait_timeout=""
 _MYSQL_SAVED_interactive_timeout=""
+_MYSQL_CHANGED_max_allowed_packet=0
+_MYSQL_CHANGED_net_read_timeout=0
+_MYSQL_CHANGED_net_write_timeout=0
+_MYSQL_CHANGED_wait_timeout=0
+_MYSQL_CHANGED_interactive_timeout=0
+_MYSQL_DUMP_CLIENT_CNF=""
 
+# Usage: get_mysql_database_size_bytes <database>  → bytes on stdout (0 on failure)
+get_mysql_database_size_bytes() {
+    local db="$1"
+    local size
+    size=$(mysql -N -e "
+        SELECT IFNULL(SUM(data_length + index_length), 0)
+        FROM information_schema.tables
+        WHERE table_schema = '${db}';
+    " 2>/dev/null) || size=0
+    echo "${size:-0}"
+}
+
+# Write temp defaults file for mysqldump client timeouts (no server GLOBAL change).
+# Usage: ensure_mysqldump_client_defaults
+ensure_mysqldump_client_defaults() {
+    local net_timeout="${MYSQLDUMP_NET_TIMEOUT:-600}"
+    local packet="${MYSQLDUMP_MAX_ALLOWED_PACKET:-1G}"
+
+    if [ -n "$_MYSQL_DUMP_CLIENT_CNF" ] && [ -f "$_MYSQL_DUMP_CLIENT_CNF" ]; then
+        return 0
+    fi
+
+    _MYSQL_DUMP_CLIENT_CNF=$(mktemp "${TMPDIR:-/tmp}/borg-mysqldump.XXXXXX.cnf")
+    chmod 600 "$_MYSQL_DUMP_CLIENT_CNF"
+    cat > "$_MYSQL_DUMP_CLIENT_CNF" <<EOF
+[client]
+max_allowed_packet=${packet}
+net_read_timeout=${net_timeout}
+net_write_timeout=${net_timeout}
+
+[mysqldump]
+max_allowed_packet=${packet}
+net_read_timeout=${net_timeout}
+net_write_timeout=${net_timeout}
+EOF
+}
+
+cleanup_mysqldump_client_defaults() {
+    if [ -n "${_MYSQL_DUMP_CLIENT_CNF:-}" ] && [ -f "$_MYSQL_DUMP_CLIENT_CNF" ]; then
+        rm -f "$_MYSQL_DUMP_CLIENT_CNF"
+    fi
+    _MYSQL_DUMP_CLIENT_CNF=""
+}
+
+# True (exit 0) if this DB warrants temporary GLOBAL boost.
+# Large size gate + at least one GLOBAL below dump target.
+# Usage: mysql_db_needs_global_tune <database>
+mysql_db_needs_global_tune() {
+    local db="$1"
+    local size_bytes threshold
+    local packet_bytes net_timeout wait_timeout
+    local cur_packet cur_net_read cur_net_write cur_wait cur_interactive
+    local saved
+
+    threshold="${MYSQLDUMP_GLOBAL_TUNE_MIN_BYTES:-536870912}" # 512 MiB
+    size_bytes=$(get_mysql_database_size_bytes "$db")
+    if [ "${size_bytes:-0}" -lt "$threshold" ]; then
+        return 1
+    fi
+
+    packet_bytes="${MYSQLDUMP_MAX_ALLOWED_PACKET_BYTES:-1073741824}"
+    net_timeout="${MYSQLDUMP_NET_TIMEOUT:-600}"
+    wait_timeout="${MYSQLDUMP_WAIT_TIMEOUT:-28800}"
+
+    saved=$(mysql -N -e "
+        SELECT CONCAT_WS(' ',
+            @@global.max_allowed_packet,
+            @@global.net_read_timeout,
+            @@global.net_write_timeout,
+            @@global.wait_timeout,
+            @@global.interactive_timeout);
+    " 2>/dev/null) || return 0
+
+    # shellcheck disable=SC2086
+    set -- $saved
+    cur_packet=$1; cur_net_read=$2; cur_net_write=$3; cur_wait=$4; cur_interactive=$5
+
+    [ "$cur_packet" -lt "$packet_bytes" ] && return 0
+    [ "$cur_net_read" -lt "$net_timeout" ] && return 0
+    [ "$cur_net_write" -lt "$net_timeout" ] && return 0
+    [ "$cur_wait" -lt "$wait_timeout" ] && return 0
+    [ "$cur_interactive" -lt "$wait_timeout" ] && return 0
+    return 1
+}
+
+# Raise only those GLOBALs that are below target; remember what we changed for restore.
+# Usage: prepare_mysql_for_large_dump
 prepare_mysql_for_large_dump() {
     local packet_bytes="${MYSQLDUMP_MAX_ALLOWED_PACKET_BYTES:-1073741824}"
     local net_timeout="${MYSQLDUMP_NET_TIMEOUT:-600}"
     local wait_timeout="${MYSQLDUMP_WAIT_TIMEOUT:-28800}"
-    local saved
+    local saved sql=""
 
     if [ "$_MYSQL_DUMP_TUNING_ACTIVE" = "1" ]; then
-        echo "MySQL dump tuning already active — skipping re-apply"
+        echo "MySQL dump GLOBAL tuning already active — skipping re-apply"
         return 0
     fi
 
@@ -145,16 +240,41 @@ prepare_mysql_for_large_dump() {
     _MYSQL_SAVED_net_write_timeout=$3
     _MYSQL_SAVED_wait_timeout=$4
     _MYSQL_SAVED_interactive_timeout=$5
+    _MYSQL_CHANGED_max_allowed_packet=0
+    _MYSQL_CHANGED_net_read_timeout=0
+    _MYSQL_CHANGED_net_write_timeout=0
+    _MYSQL_CHANGED_wait_timeout=0
+    _MYSQL_CHANGED_interactive_timeout=0
 
-    if mysql -e "
-        SET GLOBAL max_allowed_packet=${packet_bytes};
-        SET GLOBAL net_read_timeout=${net_timeout};
-        SET GLOBAL net_write_timeout=${net_timeout};
-        SET GLOBAL wait_timeout=${wait_timeout};
-        SET GLOBAL interactive_timeout=${wait_timeout};
-    " 2>&1; then
+    if [ "$_MYSQL_SAVED_max_allowed_packet" -lt "$packet_bytes" ]; then
+        sql="${sql} SET GLOBAL max_allowed_packet=${packet_bytes};"
+        _MYSQL_CHANGED_max_allowed_packet=1
+    fi
+    if [ "$_MYSQL_SAVED_net_read_timeout" -lt "$net_timeout" ]; then
+        sql="${sql} SET GLOBAL net_read_timeout=${net_timeout};"
+        _MYSQL_CHANGED_net_read_timeout=1
+    fi
+    if [ "$_MYSQL_SAVED_net_write_timeout" -lt "$net_timeout" ]; then
+        sql="${sql} SET GLOBAL net_write_timeout=${net_timeout};"
+        _MYSQL_CHANGED_net_write_timeout=1
+    fi
+    if [ "$_MYSQL_SAVED_wait_timeout" -lt "$wait_timeout" ]; then
+        sql="${sql} SET GLOBAL wait_timeout=${wait_timeout};"
+        _MYSQL_CHANGED_wait_timeout=1
+    fi
+    if [ "$_MYSQL_SAVED_interactive_timeout" -lt "$wait_timeout" ]; then
+        sql="${sql} SET GLOBAL interactive_timeout=${wait_timeout};"
+        _MYSQL_CHANGED_interactive_timeout=1
+    fi
+
+    if [ -z "$sql" ]; then
+        echo "MySQL GLOBALs already sufficient for large dump — no server changes"
+        return 0
+    fi
+
+    if mysql -e "$sql" 2>&1; then
         _MYSQL_DUMP_TUNING_ACTIVE=1
-        echo "MySQL dump tuning applied temporarily (packet=${packet_bytes}, net=${net_timeout}s, wait=${wait_timeout}s; will restore previous GLOBAL values)"
+        echo "MySQL dump GLOBAL tuning applied temporarily (will restore previous values)"
         echo "Previous GLOBAL: packet=${_MYSQL_SAVED_max_allowed_packet} net_read=${_MYSQL_SAVED_net_read_timeout} net_write=${_MYSQL_SAVED_net_write_timeout} wait=${_MYSQL_SAVED_wait_timeout} interactive=${_MYSQL_SAVED_interactive_timeout}"
     else
         echo "Warning: could not SET GLOBAL MySQL dump limits (continuing with client flags)"
@@ -162,43 +282,56 @@ prepare_mysql_for_large_dump() {
     fi
 }
 
-# Restore MySQL GLOBAL values saved by prepare_mysql_for_large_dump (idempotent).
+# Restore only GLOBALs we changed (idempotent).
 restore_mysql_after_large_dump() {
+    local sql=""
+
     if [ "$_MYSQL_DUMP_TUNING_ACTIVE" != "1" ]; then
+        cleanup_mysqldump_client_defaults
         return 0
     fi
     _MYSQL_DUMP_TUNING_ACTIVE=0
 
-    if [ -z "${_MYSQL_SAVED_max_allowed_packet:-}" ]; then
-        return 0
+    [ "$_MYSQL_CHANGED_max_allowed_packet" = "1" ] && \
+        sql="${sql} SET GLOBAL max_allowed_packet=${_MYSQL_SAVED_max_allowed_packet};"
+    [ "$_MYSQL_CHANGED_net_read_timeout" = "1" ] && \
+        sql="${sql} SET GLOBAL net_read_timeout=${_MYSQL_SAVED_net_read_timeout};"
+    [ "$_MYSQL_CHANGED_net_write_timeout" = "1" ] && \
+        sql="${sql} SET GLOBAL net_write_timeout=${_MYSQL_SAVED_net_write_timeout};"
+    [ "$_MYSQL_CHANGED_wait_timeout" = "1" ] && \
+        sql="${sql} SET GLOBAL wait_timeout=${_MYSQL_SAVED_wait_timeout};"
+    [ "$_MYSQL_CHANGED_interactive_timeout" = "1" ] && \
+        sql="${sql} SET GLOBAL interactive_timeout=${_MYSQL_SAVED_interactive_timeout};"
+
+    if [ -n "$sql" ]; then
+        if mysql -e "$sql" 2>&1; then
+            echo "MySQL GLOBAL dump limits restored to previous values"
+        else
+            echo "Warning: failed to restore previous MySQL GLOBAL dump limits"
+        fi
     fi
 
-    if mysql -e "
-        SET GLOBAL max_allowed_packet=${_MYSQL_SAVED_max_allowed_packet};
-        SET GLOBAL net_read_timeout=${_MYSQL_SAVED_net_read_timeout};
-        SET GLOBAL net_write_timeout=${_MYSQL_SAVED_net_write_timeout};
-        SET GLOBAL wait_timeout=${_MYSQL_SAVED_wait_timeout};
-        SET GLOBAL interactive_timeout=${_MYSQL_SAVED_interactive_timeout};
-    " 2>&1; then
-        echo "MySQL GLOBAL dump limits restored (packet=${_MYSQL_SAVED_max_allowed_packet}, net_read=${_MYSQL_SAVED_net_read_timeout}, net_write=${_MYSQL_SAVED_net_write_timeout}, wait=${_MYSQL_SAVED_wait_timeout}, interactive=${_MYSQL_SAVED_interactive_timeout})"
-    else
-        echo "Warning: failed to restore previous MySQL GLOBAL dump limits"
-    fi
+    cleanup_mysqldump_client_defaults
 }
 
-# Dump one database to a file with flags safe for large InnoDB/WP databases.
+# Dump one database to a file. Uses client defaults; optional GLOBAL already prepared by caller.
 # Usage: mysqldump_to_file <database> <outfile>
-# Returns mysqldump exit code.
 mysqldump_to_file() {
     local db="$1"
     local outfile="$2"
     local packet="${MYSQLDUMP_MAX_ALLOWED_PACKET:-1G}"
+    local defaults_args=()
+
+    ensure_mysqldump_client_defaults
+    if [ -n "$_MYSQL_DUMP_CLIENT_CNF" ] && [ -f "$_MYSQL_DUMP_CLIENT_CNF" ]; then
+        defaults_args=(--defaults-extra-file="$_MYSQL_DUMP_CLIENT_CNF")
+    fi
 
     # --single-transaction: consistent InnoDB snapshot without locking tables
     # --quick: stream rows (do not buffer whole table in memory)
     # --max-allowed-packet: allow large option_value / BLOB rows (wp_options)
     # shellcheck disable=SC2086
-    mysqldump "$db" \
+    mysqldump "${defaults_args[@]}" "$db" \
         --opt \
         --routines \
         --skip-comments \
