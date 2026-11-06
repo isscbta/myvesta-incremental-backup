@@ -134,14 +134,14 @@ eval borg create \
     "$HOME_DIR/$user" \
     2>&1 | tee -a "$LOG_FILE"
 BORG_EXIT=${PIPESTATUS[0]}
-if [ "$BORG_EXIT" -eq 0 ]; then
+if borg_ok "$BORG_EXIT"; then
     echo "$(get_timestamp) Home directory backup completed successfully" | tee -a "$LOG_FILE"
     # Prune old archives only when backup succeeded
     echo "$(get_timestamp) Pruning old archives..." | tee -a "$LOG_FILE"
     borg prune $OPTIONS_PRUNE "$USER_REPO" 2>&1 | tee -a "$LOG_FILE"
     compact_repo_if_supported "$USER_REPO" >> "$LOG_FILE" 2>&1
 else
-    echo "$(get_timestamp) Error: Home directory backup failed" | tee -a "$LOG_FILE"
+    echo "$(get_timestamp) Error: Home directory backup failed (exit $BORG_EXIT)" | tee -a "$LOG_FILE"
     echo "$(get_timestamp) Skipping prune because backup failed" | tee -a "$LOG_FILE"
     BACKUP_FAILED=1
 fi
@@ -166,13 +166,13 @@ if [ -d "$VESTA_USER_DIR" ]; then
         "$VESTA_USER_DIR" \
         2>&1 | tee -a "$LOG_FILE"
     BORG_EXIT=${PIPESTATUS[0]}
-    if [ "$BORG_EXIT" -eq 0 ]; then
+    if borg_ok "$BORG_EXIT"; then
         echo "$(get_timestamp) myVesta config backup completed successfully" | tee -a "$LOG_FILE"
         # Prune old vesta archives only when backup succeeded
         borg prune $OPTIONS_PRUNE "$VESTA_REPO" 2>&1 | tee -a "$LOG_FILE"
         compact_repo_if_supported "$VESTA_REPO" >> "$LOG_FILE" 2>&1
     else
-        echo "$(get_timestamp) Error: myVesta config backup failed" | tee -a "$LOG_FILE"
+        echo "$(get_timestamp) Error: myVesta config backup failed (exit $BORG_EXIT)" | tee -a "$LOG_FILE"
         echo "$(get_timestamp) Skipping prune because backup failed" | tee -a "$LOG_FILE"
         BACKUP_FAILED=1
     fi
@@ -217,7 +217,7 @@ if [ -n "$DATABASES" ]; then
             
             borg create $OPTIONS_CREATE "$DB_REPO::$DB_ARCHIVE_NAME" - < "$DUMP_FILE" 2>&1 | tee -a "$LOG_FILE"
             BORG_EXIT=${PIPESTATUS[0]}
-            if [ "$BORG_EXIT" -eq 0 ]; then
+            if borg_ok "$BORG_EXIT"; then
                 echo "$(get_timestamp) Database $database backed up successfully" | tee -a "$LOG_FILE"
                 ((DB_COUNT++))
                 borg prune $OPTIONS_PRUNE --glob-archives "${database}-*" "$DB_REPO" 2>&1 | tee -a "$LOG_FILE"
@@ -229,7 +229,7 @@ if [ -n "$DATABASES" ]; then
             
             borg create $OPTIONS_CREATE "$REMOTE_DB_REPO::$DB_ARCHIVE_NAME" - < "$DUMP_FILE" 2>&1 | tee -a "$LOG_FILE"
             REMOTE_BORG_EXIT=${PIPESTATUS[0]}
-            if [ "$REMOTE_BORG_EXIT" -eq 0 ]; then
+            if borg_ok "$REMOTE_BORG_EXIT"; then
                 echo "$(get_timestamp) Database $database remote backup completed successfully" | tee -a "$LOG_FILE"
                 borg prune $OPTIONS_PRUNE --glob-archives "${database}-*" "$REMOTE_DB_REPO" 2>&1 | tee -a "$LOG_FILE"
                 compact_repo_if_supported "$REMOTE_DB_REPO" >> "$LOG_FILE" 2>&1
@@ -251,8 +251,8 @@ if [ -n "$DATABASES" ]; then
         tee -a "$LOG_FILE" < "$BORG_OUT"
         rm -f "$BORG_OUT"
         DUMP_EXIT=${DUMP_EXIT:-1}
-        BORG_EXIT=${BORG_EXIT:-1}
-        if [ "$DUMP_EXIT" -ne 0 ] && [ "$BORG_EXIT" -eq 0 ]; then
+        BORG_EXIT=${BORG_EXIT:-2}
+        if [ "$DUMP_EXIT" -ne 0 ] && borg_ok "$BORG_EXIT"; then
             # mysqldump failed but borg created an archive from truncated data — remove it
             echo "$(get_timestamp) Error: mysqldump failed for $database (exit $DUMP_EXIT) — removing truncated archive" | tee -a "$LOG_FILE"
             borg delete "$DB_REPO::$DB_ARCHIVE_NAME" >> "$LOG_FILE" 2>&1
@@ -260,7 +260,7 @@ if [ -n "$DATABASES" ]; then
         elif [ "$DUMP_EXIT" -ne 0 ]; then
             echo "$(get_timestamp) Error: mysqldump failed for database $database (exit $DUMP_EXIT)" | tee -a "$LOG_FILE"
             BACKUP_FAILED=1
-        elif [ "$BORG_EXIT" -ne 0 ]; then
+        elif ! borg_ok "$BORG_EXIT"; then
             echo "$(get_timestamp) Error: borg create failed for database $database (exit $BORG_EXIT)" | tee -a "$LOG_FILE"
             BACKUP_FAILED=1
         else
@@ -387,13 +387,13 @@ if [ "$BACKUP_MODE" = "both" ]; then
             "$HOME_DIR/$user" \
             2>&1 | tee -a "$LOG_FILE"
         REMOTE_BORG_EXIT=${PIPESTATUS[0]}
-        if [ "$REMOTE_BORG_EXIT" -eq 0 ]; then
+        if borg_ok "$REMOTE_BORG_EXIT"; then
             echo "$(get_timestamp) Remote home backup completed successfully" | tee -a "$LOG_FILE"
             echo "$(get_timestamp) Pruning remote home archives..." | tee -a "$LOG_FILE"
             borg prune $OPTIONS_PRUNE "$REMOTE_USER_REPO" 2>&1 | tee -a "$LOG_FILE"
             compact_repo_if_supported "$REMOTE_USER_REPO" >> "$LOG_FILE" 2>&1
         else
-            echo "$(get_timestamp) ERROR: Remote home backup failed" | tee -a "$LOG_FILE"
+            echo "$(get_timestamp) ERROR: Remote home backup failed (exit $REMOTE_BORG_EXIT)" | tee -a "$LOG_FILE"
             SYNC_FAILED=1
         fi
         
@@ -405,12 +405,12 @@ if [ "$BACKUP_MODE" = "both" ]; then
                 "$VESTA_USER_DIR" \
                 2>&1 | tee -a "$LOG_FILE"
             REMOTE_BORG_EXIT=${PIPESTATUS[0]}
-            if [ "$REMOTE_BORG_EXIT" -eq 0 ]; then
+            if borg_ok "$REMOTE_BORG_EXIT"; then
                 echo "$(get_timestamp) Remote myVesta config backup completed successfully" | tee -a "$LOG_FILE"
                 borg prune $OPTIONS_PRUNE "$REMOTE_VESTA_REPO" 2>&1 | tee -a "$LOG_FILE"
                 compact_repo_if_supported "$REMOTE_VESTA_REPO" >> "$LOG_FILE" 2>&1
             else
-                echo "$(get_timestamp) ERROR: Remote myVesta config backup failed" | tee -a "$LOG_FILE"
+                echo "$(get_timestamp) ERROR: Remote myVesta config backup failed (exit $REMOTE_BORG_EXIT)" | tee -a "$LOG_FILE"
                 SYNC_FAILED=1
             fi
         fi

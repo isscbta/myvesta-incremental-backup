@@ -87,6 +87,14 @@ get_borg_version() {
     borg --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1
 }
 
+# Borg exit codes: 0 = success, 1 = warning (operation completed), >=2 = error.
+# Treat 0 and 1 as OK so warnings (changed files, etc.) do not fail the backup.
+# Usage: borg_ok <exit_code>
+borg_ok() {
+    local ec="${1:-2}"
+    [ "$ec" -eq 0 ] || [ "$ec" -eq 1 ]
+}
+
 # Run borg compact on a repo if borg >= 1.2 (compact was added in 1.2)
 # Usage: compact_repo_if_supported <repo_path>
 compact_repo_if_supported() {

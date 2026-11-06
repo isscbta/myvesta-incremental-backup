@@ -68,14 +68,14 @@ if [ -d "$ETC_DIR" ]; then
         >> "$LOG_FILE" 2>&1
     ETC_EXIT=$?
     
-    if [ "$ETC_EXIT" -eq 0 ]; then
+    if borg_ok "$ETC_EXIT"; then
         echo "$(get_timestamp) /etc backup completed successfully" | tee -a "$LOG_FILE"
         # Prune old archives only when backup succeeded
         echo "$(get_timestamp) Pruning old /etc archives..." | tee -a "$LOG_FILE"
         borg prune $OPTIONS_PRUNE "$REPO_ETC_PATH" >> "$LOG_FILE" 2>&1
         compact_repo_if_supported "$REPO_ETC_PATH" >> "$LOG_FILE" 2>&1
     else
-        echo "$(get_timestamp) Error: /etc backup failed" | tee -a "$LOG_FILE"
+        echo "$(get_timestamp) Error: /etc backup failed (exit $ETC_EXIT)" | tee -a "$LOG_FILE"
         echo "$(get_timestamp) Skipping prune because backup failed" | tee -a "$LOG_FILE"
         BACKUP_FAILED=1
     fi
@@ -101,14 +101,14 @@ if [ -d "$VESTA_DIR" ]; then
         >> "$LOG_FILE" 2>&1
     VESTA_EXIT=$?
     
-    if [ "$VESTA_EXIT" -eq 0 ]; then
+    if borg_ok "$VESTA_EXIT"; then
         echo "$(get_timestamp) myVesta backup completed successfully" | tee -a "$LOG_FILE"
         # Prune old archives only when backup succeeded
         echo "$(get_timestamp) Pruning old myVesta archives..." | tee -a "$LOG_FILE"
         borg prune $OPTIONS_PRUNE "$REPO_VESTA_PATH" >> "$LOG_FILE" 2>&1
         compact_repo_if_supported "$REPO_VESTA_PATH" >> "$LOG_FILE" 2>&1
     else
-        echo "$(get_timestamp) Error: myVesta backup failed" | tee -a "$LOG_FILE"
+        echo "$(get_timestamp) Error: myVesta backup failed (exit $VESTA_EXIT)" | tee -a "$LOG_FILE"
         echo "$(get_timestamp) Skipping prune because backup failed" | tee -a "$LOG_FILE"
         BACKUP_FAILED=1
     fi
@@ -131,14 +131,14 @@ if [ -d "$SCRIPTS_DIR" ]; then
         >> "$LOG_FILE" 2>&1
     SCRIPTS_EXIT=$?
     
-    if [ "$SCRIPTS_EXIT" -eq 0 ]; then
+    if borg_ok "$SCRIPTS_EXIT"; then
         echo "$(get_timestamp) Scripts backup completed successfully" | tee -a "$LOG_FILE"
         # Prune old archives only when backup succeeded
         echo "$(get_timestamp) Pruning old scripts archives..." | tee -a "$LOG_FILE"
         borg prune $OPTIONS_PRUNE "$REPO_SCRIPTS_PATH" >> "$LOG_FILE" 2>&1
         compact_repo_if_supported "$REPO_SCRIPTS_PATH" >> "$LOG_FILE" 2>&1
     else
-        echo "$(get_timestamp) Error: Scripts backup failed" | tee -a "$LOG_FILE"
+        echo "$(get_timestamp) Error: Scripts backup failed (exit $SCRIPTS_EXIT)" | tee -a "$LOG_FILE"
         echo "$(get_timestamp) Skipping prune because backup failed" | tee -a "$LOG_FILE"
         BACKUP_FAILED=1
     fi
