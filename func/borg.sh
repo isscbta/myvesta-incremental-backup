@@ -173,22 +173,12 @@ compute_mysqldump_targets_for_bytes() {
 }
 
 # Write/refresh temp defaults for mysqldump client (no server GLOBAL change).
-# Optional size_bytes scales client net_* the same way as GLOBAL targets.
-# Usage: ensure_mysqldump_client_defaults [size_bytes]
+# NOTE: MariaDB mysqldump rejects net_read_timeout/net_write_timeout in option files
+# ("unknown variable") — those are applied only via temporary SET GLOBAL.
+# Usage: ensure_mysqldump_client_defaults
 ensure_mysqldump_client_defaults() {
-    local size_bytes="${1:-0}"
-    local net_timeout packet
+    local packet="${MYSQLDUMP_MAX_ALLOWED_PACKET:-1G}"
 
-    if [ "$size_bytes" -gt 0 ]; then
-        compute_mysqldump_targets_for_bytes "$size_bytes" >/dev/null
-        net_timeout="$_MYSQL_TUNE_NET_TIMEOUT"
-        packet="${MYSQLDUMP_MAX_ALLOWED_PACKET:-1G}"
-    else
-        net_timeout="${MYSQLDUMP_NET_TIMEOUT:-600}"
-        packet="${MYSQLDUMP_MAX_ALLOWED_PACKET:-1G}"
-    fi
-
-    # Refresh file when called again with size (overwrite)
     if [ -z "$_MYSQL_DUMP_CLIENT_CNF" ] || [ ! -f "$_MYSQL_DUMP_CLIENT_CNF" ]; then
         _MYSQL_DUMP_CLIENT_CNF=$(mktemp "${TMPDIR:-/tmp}/borg-mysqldump.XXXXXX.cnf")
         chmod 600 "$_MYSQL_DUMP_CLIENT_CNF"
@@ -197,13 +187,9 @@ ensure_mysqldump_client_defaults() {
     cat > "$_MYSQL_DUMP_CLIENT_CNF" <<EOF
 [client]
 max_allowed_packet=${packet}
-net_read_timeout=${net_timeout}
-net_write_timeout=${net_timeout}
 
 [mysqldump]
 max_allowed_packet=${packet}
-net_read_timeout=${net_timeout}
-net_write_timeout=${net_timeout}
 EOF
 }
 
@@ -285,8 +271,8 @@ prepare_mysql_for_large_dump() {
     net_timeout="$_MYSQL_TUNE_NET_TIMEOUT"
     wait_timeout="$_MYSQL_TUNE_WAIT_TIMEOUT"
 
-    # Keep client defaults in sync with scaled net timeouts
-    ensure_mysqldump_client_defaults "$size_bytes"
+    # Client packet only (net_* belong on GLOBAL — mysqldump rejects them in cnf)
+    ensure_mysqldump_client_defaults
 
     saved=$(mysql -N -e "
         SELECT CONCAT_WS(' ',

@@ -197,7 +197,9 @@ find "$DUMP_TMP_DIR" -name '*.sql' -mtime +1 -delete 2>/dev/null
 #  - GLOBAL raise/restore scaled to largest DB size (8GB vs 32GB → different timeouts)
 #  - one retry with GLOBAL if dump fails cold
 if [ -n "$DATABASES" ]; then
-    trap 'restore_mysql_after_large_dump 2>&1 | tee -a "$LOG_FILE"' EXIT
+    # Do NOT pipe prepare/restore through `tee` (that runs them in a subshell and
+    # loses _MYSQL_DUMP_TUNING_ACTIVE / saved GLOBAL values — restore would never run).
+    trap 'restore_mysql_after_large_dump >>"$LOG_FILE" 2>&1' EXIT
 
     NEED_GLOBAL_TUNE=0
     MAX_DB_SIZE_BYTES=0
@@ -215,11 +217,11 @@ if [ -n "$DATABASES" ]; then
         fi
     done <<< "$DATABASES"
 
-    # Client defaults scaled to largest DB (even when GLOBAL is not touched)
-    ensure_mysqldump_client_defaults "$MAX_DB_SIZE_BYTES"
+    # Client defaults: max_allowed_packet only (net_* via GLOBAL when needed)
+    ensure_mysqldump_client_defaults
 
     if [ "$NEED_GLOBAL_TUNE" -eq 1 ]; then
-        prepare_mysql_for_large_dump "$MAX_DB_SIZE_BYTES" 2>&1 | tee -a "$LOG_FILE"
+        prepare_mysql_for_large_dump "$MAX_DB_SIZE_BYTES" > >(tee -a "$LOG_FILE") 2>&1
     else
         echo "$(get_timestamp) MySQL GLOBAL unchanged (client-only dump hardening)" | tee -a "$LOG_FILE"
     fi
@@ -244,7 +246,7 @@ if [ -n "$DATABASES" ]; then
             echo "$(get_timestamp) mysqldump failed for $database (exit $DUMP_EXIT) — retrying with temporary MySQL GLOBAL boost" | tee -a "$LOG_FILE"
             rm -f "$DUMP_FILE"
             RETRY_SIZE=$(get_mysql_database_size_bytes "$database")
-            prepare_mysql_for_large_dump "$RETRY_SIZE" 2>&1 | tee -a "$LOG_FILE"
+            prepare_mysql_for_large_dump "$RETRY_SIZE" > >(tee -a "$LOG_FILE") 2>&1
             DUMP_FILE=$(mktemp "$DUMP_TMP_DIR/${database}.XXXXXX.sql")
             mysqldump_to_file "$database" "$DUMP_FILE" 2>>"$LOG_FILE"
             DUMP_EXIT=$?
@@ -288,7 +290,7 @@ if [ -n "$DATABASES" ]; then
     
     echo "$(get_timestamp) Total databases backed up: $DB_COUNT" | tee -a "$LOG_FILE"
 
-    restore_mysql_after_large_dump 2>&1 | tee -a "$LOG_FILE"
+    restore_mysql_after_large_dump > >(tee -a "$LOG_FILE") 2>&1
     trap - EXIT
 else
     echo "$(get_timestamp) No databases found for user $user" | tee -a "$LOG_FILE"
