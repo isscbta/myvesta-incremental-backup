@@ -402,46 +402,80 @@ pick_mysqldump_tmp_dir() {
     return 1
 }
 
-# Dump one database to a file. Uses client defaults; optional GLOBAL already prepared by caller.
-# stderr from mysqldump is printed to stderr (caller should tee to log).
+# Build common mysqldump argv (no redirection). Caller adds destination.
+# Usage: _mysqldump_base_args → fills global _MYSQLDUMP_ARGS array
+_mysqldump_build_args() {
+    local packet="${MYSQLDUMP_MAX_ALLOWED_PACKET:-1G}"
+    ensure_mysqldump_client_defaults
+    _MYSQLDUMP_ARGS=()
+    if [ -n "$_MYSQL_DUMP_CLIENT_CNF" ] && [ -f "$_MYSQL_DUMP_CLIENT_CNF" ]; then
+        _MYSQLDUMP_ARGS+=(--defaults-extra-file="$_MYSQL_DUMP_CLIENT_CNF")
+    fi
+    # --single-transaction: InnoDB snapshot; --quick: stream rows
+    # shellcheck disable=SC2206
+    _MYSQLDUMP_ARGS+=(
+        --opt
+        --routines
+        --skip-comments
+        --single-transaction
+        --quick
+        --max-allowed-packet="$packet"
+    )
+    if [ -n "${MYSQLDUMP_EXTRA_OPTIONS:-}" ]; then
+        # shellcheck disable=SC2206
+        _MYSQLDUMP_ARGS+=(${MYSQLDUMP_EXTRA_OPTIONS})
+    fi
+}
+
+# Dump one database to a file (for both+borg dual upload). Prints mysqldump stderr on failure.
 # Usage: mysqldump_to_file <database> <outfile>
 mysqldump_to_file() {
     local db="$1"
     local outfile="$2"
-    local packet="${MYSQLDUMP_MAX_ALLOWED_PACKET:-1G}"
-    local defaults_args=()
     local errfile rc
 
-    ensure_mysqldump_client_defaults
-    if [ -n "$_MYSQL_DUMP_CLIENT_CNF" ] && [ -f "$_MYSQL_DUMP_CLIENT_CNF" ]; then
-        defaults_args=(--defaults-extra-file="$_MYSQL_DUMP_CLIENT_CNF")
-    fi
-
+    _mysqldump_build_args
     errfile=$(mktemp "${TMPDIR:-/tmp}/borg-mysqldump-err.XXXXXX")
 
-    # --single-transaction: consistent InnoDB snapshot without locking tables
-    # --quick: stream rows (do not buffer whole table in memory)
-    # --max-allowed-packet: allow large option_value / BLOB rows (wp_options)
-    # shellcheck disable=SC2086
-    mysqldump "${defaults_args[@]}" "$db" \
-        --opt \
-        --routines \
-        --skip-comments \
-        --single-transaction \
-        --quick \
-        --max-allowed-packet="$packet" \
-        ${MYSQLDUMP_EXTRA_OPTIONS:-} \
-        > "$outfile" 2>"$errfile"
+    mysqldump "${_MYSQLDUMP_ARGS[@]}" "$db" > "$outfile" 2>"$errfile"
     rc=$?
 
     if [ "$rc" -ne 0 ]; then
         echo "mysqldump stderr for $db (exit $rc):" >&2
         cat "$errfile" >&2
-        # partial/failed dump file is useless
         : > "$outfile"
     fi
     rm -f "$errfile"
     return "$rc"
+}
+
+# Stream full mysqldump into borg create (no local SQL file — preferred for remote/local).
+# Sets globals: DUMP_EXIT, BORG_EXIT. Prints borg stats on stdout; mysqldump errors on stderr.
+# Usage: mysqldump_pipe_to_borg <database> <repo::archive> <borg_create_options_string>
+mysqldump_pipe_to_borg() {
+    local db="$1"
+    local dest="$2"
+    local borg_opts="${3:-}"
+    local errfile borg_out pipe_rc
+
+    _mysqldump_build_args
+    errfile=$(mktemp "${TMPDIR:-/tmp}/borg-mysqldump-err.XXXXXX")
+    borg_out=$(mktemp "${TMPDIR:-/tmp}/borg-create-out.XXXXXX")
+
+    # Keep tee OUT of this pipe so PIPESTATUS stays mysqldump/borg.
+    # shellcheck disable=SC2086
+    mysqldump "${_MYSQLDUMP_ARGS[@]}" "$db" 2>"$errfile" | \
+        borg create $borg_opts "$dest" - >"$borg_out" 2>&1
+    pipe_rc=("${PIPESTATUS[@]}")
+    DUMP_EXIT=${pipe_rc[0]:-1}
+    BORG_EXIT=${pipe_rc[1]:-2}
+
+    cat "$borg_out"
+    if [ "$DUMP_EXIT" -ne 0 ]; then
+        echo "mysqldump stderr for $db (exit $DUMP_EXIT):" >&2
+        cat "$errfile" >&2
+    fi
+    rm -f "$errfile" "$borg_out"
 }
 
 # Run borg compact on a repo if borg >= 1.2 (compact was added in 1.2)

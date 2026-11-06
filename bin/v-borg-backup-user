@@ -188,9 +188,13 @@ DB_COUNT=0
 DATABASES=$(get_user_mysql_databases "$user")
 
 # Dump strategy:
-#  - always: client-only packet + dump-to-temp-file (no server change for small DBs)
-#  - GLOBAL raise/restore scaled to largest DB size (8GB vs 32GB → different timeouts)
-#  - temp dir must have ~2x DB free space (remote mode often has tiny /backup)
+#  - remote/local: mysqldump | borg stream (no local SQL file — remote must not need free disk)
+#  - both+borg: one dump to temp file, then two borg creates (needs local space)
+#  - GLOBAL raise/restore scaled by DB size; retry full dump on failure (e.g. Error 1412)
+#  - never skip/ignore tables — always full database
+MYSQLDUMP_MAX_ATTEMPTS="${MYSQLDUMP_MAX_ATTEMPTS:-3}"
+MYSQLDUMP_RETRY_SLEEP="${MYSQLDUMP_RETRY_SLEEP:-5}"
+
 if [ -n "$DATABASES" ]; then
     # Do NOT pipe prepare/restore through `tee` (subshell loses restore state).
     trap 'restore_mysql_after_large_dump >>"$LOG_FILE" 2>&1' EXIT
@@ -211,19 +215,23 @@ if [ -n "$DATABASES" ]; then
         fi
     done <<< "$DATABASES"
 
-    # Need headroom for SQL text dump (can exceed InnoDB data_length)
-    DUMP_SPACE_NEED=$(( MAX_DB_SIZE_BYTES * 2 ))
-    [ "$DUMP_SPACE_NEED" -lt 1073741824 ] && DUMP_SPACE_NEED=1073741824
-    if ! DUMP_TMP_DIR=$(pick_mysqldump_tmp_dir "$DUMP_SPACE_NEED"); then
-        echo "$(get_timestamp) Error: no temp filesystem with ${DUMP_SPACE_NEED} bytes free for SQL dumps (set MYSQLDUMP_TMP_DIR)" | tee -a "$LOG_FILE"
-        BACKUP_FAILED=1
-        DATABASES=""
+    USE_DUMP_FILE=0
+    if [ "$BACKUP_MODE" = "both" ] && [ "$REMOTE_SYNC_METHOD" = "borg" ]; then
+        USE_DUMP_FILE=1
+        DUMP_SPACE_NEED=$(( MAX_DB_SIZE_BYTES * 2 ))
+        [ "$DUMP_SPACE_NEED" -lt 1073741824 ] && DUMP_SPACE_NEED=1073741824
+        if ! DUMP_TMP_DIR=$(pick_mysqldump_tmp_dir "$DUMP_SPACE_NEED"); then
+            echo "$(get_timestamp) Error: both+borg needs ~$(( DUMP_SPACE_NEED / 1024 / 1024 )) MB free for one shared SQL dump (set MYSQLDUMP_TMP_DIR)" | tee -a "$LOG_FILE"
+            BACKUP_FAILED=1
+            DATABASES=""
+        else
+            echo "$(get_timestamp) both+borg SQL temp dir: $DUMP_TMP_DIR" | tee -a "$LOG_FILE"
+            find "$DUMP_TMP_DIR" -name '*.sql' -mtime +1 -delete 2>/dev/null
+        fi
     else
-        echo "$(get_timestamp) SQL dump temp dir: $DUMP_TMP_DIR (need ~$(( DUMP_SPACE_NEED / 1024 / 1024 )) MB free)" | tee -a "$LOG_FILE"
-        find "$DUMP_TMP_DIR" -name '*.sql' -mtime +1 -delete 2>/dev/null
+        echo "$(get_timestamp) DB backup transport: mysqldump|borg stream (no local SQL dump file)" | tee -a "$LOG_FILE"
     fi
 
-    # Client defaults: max_allowed_packet only (net_* via GLOBAL when needed)
     ensure_mysqldump_client_defaults
 
     if [ -n "$DATABASES" ] && [ "$NEED_GLOBAL_TUNE" -eq 1 ]; then
@@ -240,45 +248,63 @@ if [ -n "$DATABASES" ]; then
         DB_ARCHIVE_NAME="$database-$ARCHIVE_DATE"
         echo "$(get_timestamp) Backing up database: $database" | tee -a "$LOG_FILE"
 
-        # Always dump to a local temp file first, then feed borg.
-        # Piping mysqldump|borg over a slow remote keeps the MySQL connection open for
-        # the whole upload and triggers Error 2013 on large DBs (8GB+ / huge wp_options).
-        DUMP_FILE=$(mktemp "$DUMP_TMP_DIR/${database}.XXXXXX.sql")
-        mysqldump_to_file "$database" "$DUMP_FILE" > >(tee -a "$LOG_FILE") 2>&1
-        DUMP_EXIT=$?
+        DUMP_OK=0
+        attempt=1
+        while [ "$attempt" -le "$MYSQLDUMP_MAX_ATTEMPTS" ]; do
+            if [ "$attempt" -gt 1 ]; then
+                echo "$(get_timestamp) Retry $attempt/$MYSQLDUMP_MAX_ATTEMPTS for full dump of $database (sleep ${MYSQLDUMP_RETRY_SLEEP}s)..." | tee -a "$LOG_FILE"
+                sleep "$MYSQLDUMP_RETRY_SLEEP"
+                # Ensure GLOBAL boost on retry if not already active (Error 2013 / long dump)
+                if [ "$_MYSQL_DUMP_TUNING_ACTIVE" != "1" ]; then
+                    prepare_mysql_for_large_dump "$(get_mysql_database_size_bytes "$database")" > >(tee -a "$LOG_FILE") 2>&1
+                fi
+            fi
 
-        # One retry with temporary GLOBAL if first attempt failed without it
-        if [ "$DUMP_EXIT" -ne 0 ] && [ "$_MYSQL_DUMP_TUNING_ACTIVE" != "1" ]; then
-            echo "$(get_timestamp) mysqldump failed for $database (exit $DUMP_EXIT) — retrying with temporary MySQL GLOBAL boost" | tee -a "$LOG_FILE"
-            rm -f "$DUMP_FILE"
-            RETRY_SIZE=$(get_mysql_database_size_bytes "$database")
-            prepare_mysql_for_large_dump "$RETRY_SIZE" > >(tee -a "$LOG_FILE") 2>&1
-            DUMP_FILE=$(mktemp "$DUMP_TMP_DIR/${database}.XXXXXX.sql")
-            mysqldump_to_file "$database" "$DUMP_FILE" > >(tee -a "$LOG_FILE") 2>&1
-            DUMP_EXIT=$?
-        fi
+            if [ "$USE_DUMP_FILE" -eq 1 ]; then
+                DUMP_FILE=$(mktemp "$DUMP_TMP_DIR/${database}.XXXXXX.sql")
+                mysqldump_to_file "$database" "$DUMP_FILE" > >(tee -a "$LOG_FILE") 2>&1
+                DUMP_EXIT=$?
+                BORG_EXIT=0
+                if [ "$DUMP_EXIT" -eq 0 ]; then
+                    borg create $OPTIONS_CREATE "$DB_REPO::$DB_ARCHIVE_NAME" - < "$DUMP_FILE" 2>&1 | tee -a "$LOG_FILE"
+                    BORG_EXIT=${PIPESTATUS[0]}
+                fi
+            else
+                # Stream entire DB to borg (local or remote repo) — no local SQL file
+                mysqldump_pipe_to_borg "$database" "$DB_REPO::$DB_ARCHIVE_NAME" "$OPTIONS_CREATE" > >(tee -a "$LOG_FILE") 2>&1
+                # DUMP_EXIT / BORG_EXIT set by helper
+            fi
 
-        if [ "$DUMP_EXIT" -ne 0 ]; then
-            echo "$(get_timestamp) Error: mysqldump failed for database $database (exit $DUMP_EXIT)" | tee -a "$LOG_FILE"
+            if [ "${DUMP_EXIT:-1}" -eq 0 ] && borg_ok "${BORG_EXIT:-2}"; then
+                DUMP_OK=1
+                break
+            fi
+
+            # Remove truncated borg archive if mysqldump failed after borg started
+            if [ "${DUMP_EXIT:-1}" -ne 0 ] && borg_ok "${BORG_EXIT:-2}"; then
+                echo "$(get_timestamp) Removing truncated archive after mysqldump failure: $DB_ARCHIVE_NAME" | tee -a "$LOG_FILE"
+                borg delete "$DB_REPO::$DB_ARCHIVE_NAME" >> "$LOG_FILE" 2>&1
+            fi
+
+            echo "$(get_timestamp) Dump attempt $attempt failed for $database (mysqldump=${DUMP_EXIT:-?} borg=${BORG_EXIT:-?})" | tee -a "$LOG_FILE"
+            [ "$USE_DUMP_FILE" -eq 1 ] && rm -f "$DUMP_FILE"
+            attempt=$((attempt + 1))
+        done
+
+        if [ "$DUMP_OK" -ne 1 ]; then
+            echo "$(get_timestamp) Error: full database backup failed for $database after $MYSQLDUMP_MAX_ATTEMPTS attempt(s)" | tee -a "$LOG_FILE"
             BACKUP_FAILED=1
-            rm -f "$DUMP_FILE"
+            [ "$USE_DUMP_FILE" -eq 1 ] && rm -f "$DUMP_FILE"
             continue
         fi
 
-        borg create $OPTIONS_CREATE "$DB_REPO::$DB_ARCHIVE_NAME" - < "$DUMP_FILE" 2>&1 | tee -a "$LOG_FILE"
-        BORG_EXIT=${PIPESTATUS[0]}
-        if borg_ok "$BORG_EXIT"; then
-            echo "$(get_timestamp) Database $database backed up successfully" | tee -a "$LOG_FILE"
-            ((DB_COUNT++))
-            borg prune $OPTIONS_PRUNE --glob-archives "${database}-*" "$DB_REPO" 2>&1 | tee -a "$LOG_FILE"
-            compact_repo_if_supported "$DB_REPO" >> "$LOG_FILE" 2>&1
-        else
-            echo "$(get_timestamp) Error: borg create failed for database $database (exit $BORG_EXIT)" | tee -a "$LOG_FILE"
-            BACKUP_FAILED=1
-        fi
+        echo "$(get_timestamp) Database $database backed up successfully" | tee -a "$LOG_FILE"
+        ((DB_COUNT++))
+        borg prune $OPTIONS_PRUNE --glob-archives "${database}-*" "$DB_REPO" 2>&1 | tee -a "$LOG_FILE"
+        compact_repo_if_supported "$DB_REPO" >> "$LOG_FILE" 2>&1
 
-        # Independent remote borg copy when both+borg (same dump file, no second mysqldump)
-        if [ "$BACKUP_MODE" = "both" ] && [ "$REMOTE_SYNC_METHOD" = "borg" ]; then
+        # Independent remote borg copy when both+borg (reuse same dump file)
+        if [ "$USE_DUMP_FILE" -eq 1 ]; then
             borg create $OPTIONS_CREATE "$REMOTE_DB_REPO::$DB_ARCHIVE_NAME" - < "$DUMP_FILE" 2>&1 | tee -a "$LOG_FILE"
             REMOTE_BORG_EXIT=${PIPESTATUS[0]}
             if borg_ok "$REMOTE_BORG_EXIT"; then
@@ -289,9 +315,8 @@ if [ -n "$DATABASES" ]; then
                 echo "$(get_timestamp) ERROR: remote borg create failed for database $database (exit $REMOTE_BORG_EXIT)" | tee -a "$LOG_FILE"
                 SYNC_FAILED=1
             fi
+            rm -f "$DUMP_FILE"
         fi
-
-        rm -f "$DUMP_FILE"
     done <<< "$DATABASES"
     
     echo "$(get_timestamp) Total databases backed up: $DB_COUNT" | tee -a "$LOG_FILE"
