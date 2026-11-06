@@ -187,18 +187,12 @@ echo "$(get_timestamp) ========== BACKING UP DATABASES ==========" | tee -a "$LO
 DB_COUNT=0
 DATABASES=$(get_user_mysql_databases "$user")
 
-# Clean up stale dump temp files from interrupted runs (older than 1 day)
-DUMP_TMP_DIR="$BACKUP_DIR/tmp"
-mkdir -p "$DUMP_TMP_DIR"
-find "$DUMP_TMP_DIR" -name '*.sql' -mtime +1 -delete 2>/dev/null
-
 # Dump strategy:
-#  - always: client-only packet/net timeouts + dump-to-temp-file (no server change)
+#  - always: client-only packet + dump-to-temp-file (no server change for small DBs)
 #  - GLOBAL raise/restore scaled to largest DB size (8GB vs 32GB → different timeouts)
-#  - one retry with GLOBAL if dump fails cold
+#  - temp dir must have ~2x DB free space (remote mode often has tiny /backup)
 if [ -n "$DATABASES" ]; then
-    # Do NOT pipe prepare/restore through `tee` (that runs them in a subshell and
-    # loses _MYSQL_DUMP_TUNING_ACTIVE / saved GLOBAL values — restore would never run).
+    # Do NOT pipe prepare/restore through `tee` (subshell loses restore state).
     trap 'restore_mysql_after_large_dump >>"$LOG_FILE" 2>&1' EXIT
 
     NEED_GLOBAL_TUNE=0
@@ -217,12 +211,24 @@ if [ -n "$DATABASES" ]; then
         fi
     done <<< "$DATABASES"
 
+    # Need headroom for SQL text dump (can exceed InnoDB data_length)
+    DUMP_SPACE_NEED=$(( MAX_DB_SIZE_BYTES * 2 ))
+    [ "$DUMP_SPACE_NEED" -lt 1073741824 ] && DUMP_SPACE_NEED=1073741824
+    if ! DUMP_TMP_DIR=$(pick_mysqldump_tmp_dir "$DUMP_SPACE_NEED"); then
+        echo "$(get_timestamp) Error: no temp filesystem with ${DUMP_SPACE_NEED} bytes free for SQL dumps (set MYSQLDUMP_TMP_DIR)" | tee -a "$LOG_FILE"
+        BACKUP_FAILED=1
+        DATABASES=""
+    else
+        echo "$(get_timestamp) SQL dump temp dir: $DUMP_TMP_DIR (need ~$(( DUMP_SPACE_NEED / 1024 / 1024 )) MB free)" | tee -a "$LOG_FILE"
+        find "$DUMP_TMP_DIR" -name '*.sql' -mtime +1 -delete 2>/dev/null
+    fi
+
     # Client defaults: max_allowed_packet only (net_* via GLOBAL when needed)
     ensure_mysqldump_client_defaults
 
-    if [ "$NEED_GLOBAL_TUNE" -eq 1 ]; then
+    if [ -n "$DATABASES" ] && [ "$NEED_GLOBAL_TUNE" -eq 1 ]; then
         prepare_mysql_for_large_dump "$MAX_DB_SIZE_BYTES" > >(tee -a "$LOG_FILE") 2>&1
-    else
+    elif [ -n "$DATABASES" ]; then
         echo "$(get_timestamp) MySQL GLOBAL unchanged (client-only dump hardening)" | tee -a "$LOG_FILE"
     fi
 
@@ -238,7 +244,7 @@ if [ -n "$DATABASES" ]; then
         # Piping mysqldump|borg over a slow remote keeps the MySQL connection open for
         # the whole upload and triggers Error 2013 on large DBs (8GB+ / huge wp_options).
         DUMP_FILE=$(mktemp "$DUMP_TMP_DIR/${database}.XXXXXX.sql")
-        mysqldump_to_file "$database" "$DUMP_FILE" 2>>"$LOG_FILE"
+        mysqldump_to_file "$database" "$DUMP_FILE" > >(tee -a "$LOG_FILE") 2>&1
         DUMP_EXIT=$?
 
         # One retry with temporary GLOBAL if first attempt failed without it
@@ -248,7 +254,7 @@ if [ -n "$DATABASES" ]; then
             RETRY_SIZE=$(get_mysql_database_size_bytes "$database")
             prepare_mysql_for_large_dump "$RETRY_SIZE" > >(tee -a "$LOG_FILE") 2>&1
             DUMP_FILE=$(mktemp "$DUMP_TMP_DIR/${database}.XXXXXX.sql")
-            mysqldump_to_file "$database" "$DUMP_FILE" 2>>"$LOG_FILE"
+            mysqldump_to_file "$database" "$DUMP_FILE" > >(tee -a "$LOG_FILE") 2>&1
             DUMP_EXIT=$?
         fi
 

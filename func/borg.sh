@@ -369,18 +369,55 @@ restore_mysql_after_large_dump() {
     cleanup_mysqldump_client_defaults
 }
 
+# Free bytes available on filesystem containing path (0 on failure).
+# Usage: get_fs_avail_bytes <path>
+get_fs_avail_bytes() {
+    local path="$1"
+    local avail
+    avail=$(df -B1 -P "$path" 2>/dev/null | awk 'NR==2 {print $4}')
+    echo "${avail:-0}"
+}
+
+# Pick a temp dir with enough free space for a SQL dump (~2x DB size headroom).
+# Prefers MYSQLDUMP_TMP_DIR, then BACKUP_DIR/tmp, /var/tmp, /tmp.
+# Usage: pick_mysqldump_tmp_dir <needed_bytes>  → path on stdout
+pick_mysqldump_tmp_dir() {
+    local need="${1:-0}"
+    local candidates=()
+    local d avail
+
+    [ -n "${MYSQLDUMP_TMP_DIR:-}" ] && candidates+=("$MYSQLDUMP_TMP_DIR")
+    [ -n "${BACKUP_DIR:-}" ] && candidates+=("$BACKUP_DIR/tmp")
+    candidates+=("/var/tmp" "/tmp")
+
+    for d in "${candidates[@]}"; do
+        mkdir -p "$d" 2>/dev/null || continue
+        avail=$(get_fs_avail_bytes "$d")
+        if [ "${avail:-0}" -ge "$need" ]; then
+            echo "$d"
+            return 0
+        fi
+        echo "Temp candidate $d: avail=${avail} need=${need}" >&2
+    done
+    return 1
+}
+
 # Dump one database to a file. Uses client defaults; optional GLOBAL already prepared by caller.
+# stderr from mysqldump is printed to stderr (caller should tee to log).
 # Usage: mysqldump_to_file <database> <outfile>
 mysqldump_to_file() {
     local db="$1"
     local outfile="$2"
     local packet="${MYSQLDUMP_MAX_ALLOWED_PACKET:-1G}"
     local defaults_args=()
+    local errfile rc
 
     ensure_mysqldump_client_defaults
     if [ -n "$_MYSQL_DUMP_CLIENT_CNF" ] && [ -f "$_MYSQL_DUMP_CLIENT_CNF" ]; then
         defaults_args=(--defaults-extra-file="$_MYSQL_DUMP_CLIENT_CNF")
     fi
+
+    errfile=$(mktemp "${TMPDIR:-/tmp}/borg-mysqldump-err.XXXXXX")
 
     # --single-transaction: consistent InnoDB snapshot without locking tables
     # --quick: stream rows (do not buffer whole table in memory)
@@ -394,7 +431,17 @@ mysqldump_to_file() {
         --quick \
         --max-allowed-packet="$packet" \
         ${MYSQLDUMP_EXTRA_OPTIONS:-} \
-        > "$outfile"
+        > "$outfile" 2>"$errfile"
+    rc=$?
+
+    if [ "$rc" -ne 0 ]; then
+        echo "mysqldump stderr for $db (exit $rc):" >&2
+        cat "$errfile" >&2
+        # partial/failed dump file is useless
+        : > "$outfile"
+    fi
+    rm -f "$errfile"
+    return "$rc"
 }
 
 # Run borg compact on a repo if borg >= 1.2 (compact was added in 1.2)
