@@ -192,12 +192,12 @@ DUMP_TMP_DIR="$BACKUP_DIR/tmp"
 mkdir -p "$DUMP_TMP_DIR"
 find "$DUMP_TMP_DIR" -name '*.sql' -mtime +1 -delete 2>/dev/null
 
-# Large WP/InnoDB dumps need raised packet + timeouts (Error 2013 otherwise)
+# Large WP/InnoDB dumps need raised packet + timeouts (Error 2013 otherwise).
+# Raise GLOBAL temporarily, then restore sysadmin values (also on unexpected exit).
 if [ -n "$DATABASES" ]; then
     prepare_mysql_for_large_dump 2>&1 | tee -a "$LOG_FILE"
-fi
+    trap 'restore_mysql_after_large_dump 2>&1 | tee -a "$LOG_FILE"' EXIT
 
-if [ -n "$DATABASES" ]; then
     while IFS= read -r database; do
         if [ -z "$database" ]; then
             continue
@@ -249,6 +249,9 @@ if [ -n "$DATABASES" ]; then
     done <<< "$DATABASES"
     
     echo "$(get_timestamp) Total databases backed up: $DB_COUNT" | tee -a "$LOG_FILE"
+
+    restore_mysql_after_large_dump 2>&1 | tee -a "$LOG_FILE"
+    trap - EXIT
 else
     echo "$(get_timestamp) No databases found for user $user" | tee -a "$LOG_FILE"
 fi

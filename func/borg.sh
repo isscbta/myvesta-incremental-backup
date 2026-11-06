@@ -95,19 +95,56 @@ borg_ok() {
     [ "$ec" -eq 0 ] || [ "$ec" -eq 1 ]
 }
 
-# Raise MariaDB/MySQL GLOBAL limits so large dumps (multi-GB, huge wp_options) do not
-# die with Error 2013 "Lost connection". Defaults: 1G packet, 600s net, 8h wait.
-# Non-fatal if SET GLOBAL is denied — mysqldump --max-allowed-packet still helps the client.
+# Temporary MySQL GLOBAL tuning for large dumps. Saves prior values and restores
+# them after backup so we do not permanently change sysadmin server settings.
+# Defaults while dumping: 1G packet, 600s net, 8h wait.
+# Globals used: _MYSQL_DUMP_TUNING_ACTIVE, _MYSQL_SAVED_*
 # Usage: prepare_mysql_for_large_dump
+#        restore_mysql_after_large_dump
+_MYSQL_DUMP_TUNING_ACTIVE=0
+_MYSQL_SAVED_max_allowed_packet=""
+_MYSQL_SAVED_net_read_timeout=""
+_MYSQL_SAVED_net_write_timeout=""
+_MYSQL_SAVED_wait_timeout=""
+_MYSQL_SAVED_interactive_timeout=""
+
 prepare_mysql_for_large_dump() {
     local packet_bytes="${MYSQLDUMP_MAX_ALLOWED_PACKET_BYTES:-1073741824}"
     local net_timeout="${MYSQLDUMP_NET_TIMEOUT:-600}"
     local wait_timeout="${MYSQLDUMP_WAIT_TIMEOUT:-28800}"
+    local saved
+
+    if [ "$_MYSQL_DUMP_TUNING_ACTIVE" = "1" ]; then
+        echo "MySQL dump tuning already active — skipping re-apply"
+        return 0
+    fi
 
     if ! command -v mysql >/dev/null 2>&1; then
         echo "Warning: mysql client not found — skipping server dump tuning"
         return 0
     fi
+
+    saved=$(mysql -N -e "
+        SELECT CONCAT_WS(' ',
+            @@global.max_allowed_packet,
+            @@global.net_read_timeout,
+            @@global.net_write_timeout,
+            @@global.wait_timeout,
+            @@global.interactive_timeout);
+    " 2>/dev/null) || saved=""
+
+    if [ -z "$saved" ]; then
+        echo "Warning: could not read MySQL GLOBAL dump limits (continuing with client flags)"
+        return 0
+    fi
+
+    # shellcheck disable=SC2086
+    set -- $saved
+    _MYSQL_SAVED_max_allowed_packet=$1
+    _MYSQL_SAVED_net_read_timeout=$2
+    _MYSQL_SAVED_net_write_timeout=$3
+    _MYSQL_SAVED_wait_timeout=$4
+    _MYSQL_SAVED_interactive_timeout=$5
 
     if mysql -e "
         SET GLOBAL max_allowed_packet=${packet_bytes};
@@ -116,9 +153,36 @@ prepare_mysql_for_large_dump() {
         SET GLOBAL wait_timeout=${wait_timeout};
         SET GLOBAL interactive_timeout=${wait_timeout};
     " 2>&1; then
-        echo "MySQL dump tuning applied (max_allowed_packet=${packet_bytes}, net_timeout=${net_timeout}s, wait_timeout=${wait_timeout}s)"
+        _MYSQL_DUMP_TUNING_ACTIVE=1
+        echo "MySQL dump tuning applied temporarily (packet=${packet_bytes}, net=${net_timeout}s, wait=${wait_timeout}s; will restore previous GLOBAL values)"
+        echo "Previous GLOBAL: packet=${_MYSQL_SAVED_max_allowed_packet} net_read=${_MYSQL_SAVED_net_read_timeout} net_write=${_MYSQL_SAVED_net_write_timeout} wait=${_MYSQL_SAVED_wait_timeout} interactive=${_MYSQL_SAVED_interactive_timeout}"
     else
         echo "Warning: could not SET GLOBAL MySQL dump limits (continuing with client flags)"
+        _MYSQL_SAVED_max_allowed_packet=""
+    fi
+}
+
+# Restore MySQL GLOBAL values saved by prepare_mysql_for_large_dump (idempotent).
+restore_mysql_after_large_dump() {
+    if [ "$_MYSQL_DUMP_TUNING_ACTIVE" != "1" ]; then
+        return 0
+    fi
+    _MYSQL_DUMP_TUNING_ACTIVE=0
+
+    if [ -z "${_MYSQL_SAVED_max_allowed_packet:-}" ]; then
+        return 0
+    fi
+
+    if mysql -e "
+        SET GLOBAL max_allowed_packet=${_MYSQL_SAVED_max_allowed_packet};
+        SET GLOBAL net_read_timeout=${_MYSQL_SAVED_net_read_timeout};
+        SET GLOBAL net_write_timeout=${_MYSQL_SAVED_net_write_timeout};
+        SET GLOBAL wait_timeout=${_MYSQL_SAVED_wait_timeout};
+        SET GLOBAL interactive_timeout=${_MYSQL_SAVED_interactive_timeout};
+    " 2>&1; then
+        echo "MySQL GLOBAL dump limits restored (packet=${_MYSQL_SAVED_max_allowed_packet}, net_read=${_MYSQL_SAVED_net_read_timeout}, net_write=${_MYSQL_SAVED_net_write_timeout}, wait=${_MYSQL_SAVED_wait_timeout}, interactive=${_MYSQL_SAVED_interactive_timeout})"
+    else
+        echo "Warning: failed to restore previous MySQL GLOBAL dump limits"
     fi
 }
 
