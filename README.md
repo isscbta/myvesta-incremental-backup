@@ -1261,7 +1261,7 @@ chmod +x /usr/local/vesta/bin/send-user-backup-report.sh
 
 # Add to CRON (runs daily at 9 AM)
 cat > /etc/cron.d/vesta-borg-user-reports << 'CRON'
-0 9 * * * root for user in $(/usr/local/vesta/bin/v-list-users plain | awk '{print $1}' | tail -n +2); do /usr/local/vesta/bin/send-user-backup-report.sh $user; done
+0 9 * * * root for user in $(/usr/local/vesta/bin/v-list-users plain | awk '{print $1}'); do /usr/local/vesta/bin/send-user-backup-report.sh $user; done
 CRON
 ```
 
@@ -1439,7 +1439,7 @@ v-borg-restore-user ARCHIVE admin
 
 **Daily User Reports (9 AM)**:
 ```bash
-0 9 * * * root for user in $(/usr/local/vesta/bin/v-list-users plain | awk '{print $1}' | tail -n +2); do /usr/local/vesta/bin/v-borg-report $user email | mail -s "Daily Backup Report" $(/usr/local/vesta/bin/v-list-user $user plain | awk '{print $2}'); done
+0 9 * * * root for user in $(/usr/local/vesta/bin/v-list-users plain | awk '{print $1}'); do /usr/local/vesta/bin/v-borg-report $user email | mail -s "Daily Backup Report" $(/usr/local/vesta/bin/v-list-user $user plain | awk '{print $2}'); done
 ```
 
 **Weekly Admin Report (Monday 8 AM)**:

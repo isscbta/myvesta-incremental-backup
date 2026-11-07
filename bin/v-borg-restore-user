@@ -425,7 +425,7 @@ if [ "$RESTORE_MODE" = "partial" ] && [ -n "$web" ]; then
     # Parse web domains
     if [ "$web" = "*" ]; then
         # Restore all web domains
-        WEB_DOMAINS=$(v-list-web-domains "$user" plain 2>/dev/null | awk '{print $1}' | tail -n +2)
+        WEB_DOMAINS=$(v-list-web-domains "$user" plain 2>/dev/null | awk '{print $1}')
     else
         WEB_DOMAINS=$(echo "$web" | tr ',' '\n')
     fi
@@ -495,7 +495,7 @@ if [ "$RESTORE_MODE" = "partial" ] && [ -n "$mail" ]; then
     
     # Parse mail domains
     if [ "$mail" = "*" ]; then
-        MAIL_DOMAINS=$(v-list-mail-domains "$user" plain 2>/dev/null | awk '{print $1}' | tail -n +2)
+        MAIL_DOMAINS=$(v-list-mail-domains "$user" plain 2>/dev/null | awk '{print $1}')
     else
         MAIL_DOMAINS=$(echo "$mail" | tr ',' '\n')
     fi
@@ -554,7 +554,7 @@ if [ "$RESTORE_MODE" = "partial" ] && [ -n "$dns" ]; then
     
     # Parse DNS domains
     if [ "$dns" = "*" ]; then
-        DNS_DOMAINS=$(v-list-dns-domains "$user" plain 2>/dev/null | awk '{print $1}' | tail -n +2)
+        DNS_DOMAINS=$(v-list-dns-domains "$user" plain 2>/dev/null | awk '{print $1}')
     else
         DNS_DOMAINS=$(echo "$dns" | tr ',' '\n')
     fi

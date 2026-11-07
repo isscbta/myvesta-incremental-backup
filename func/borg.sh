@@ -616,8 +616,10 @@ list_archives() {
 #----------------------------------------------------------#
 
 # Get list of all users
+# Note: v-list-users plain has NO header — first line is the first user (usually admin).
+# Do not use "tail -n +2" here or the first user is silently skipped.
 get_user_list() {
-    /usr/local/vesta/bin/v-list-users plain | awk '{print $1}' | tail -n +2
+    /usr/local/vesta/bin/v-list-users plain | awk '{print $1}'
 }
 
 # Check if user exists
@@ -655,9 +657,10 @@ check_user_suspended() {
 
 # Get list of databases for user
 # Usage: get_user_databases <user>
+# Note: v-list-databases plain has NO header — do not skip the first line.
 get_user_databases() {
     local user="$1"
-    /usr/local/vesta/bin/v-list-databases "$user" plain 2>/dev/null | awk '{print $1}' | tail -n +2
+    /usr/local/vesta/bin/v-list-databases "$user" plain 2>/dev/null | awk '{print $1}'
 }
 
 # Get MySQL databases only
